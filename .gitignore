@@ -36,3 +36,5 @@ build/
 .env
 *organizer.sh
 .DS_Store
+/assets/
+docker
