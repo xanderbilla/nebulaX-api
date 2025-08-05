@@ -43,10 +43,16 @@
 		</dependency>
 
 		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-validation</artifactId>
+		</dependency>
+
+		<dependency>
 			<groupId>org.projectlombok</groupId>
 			<artifactId>lombok</artifactId>
 			<optional>true</optional>
 		</dependency>
+
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-test</artifactId>
@@ -70,37 +76,21 @@
 			<version>3.13.0</version>
 		</dependency>
 
-		<!-- AWS Cognito SDK dependencies -->
+		<!-- AWS SDK v2 Dependencies -->
 		<dependency>
 			<groupId>software.amazon.awssdk</groupId>
-			<artifactId>cognitoidentityprovider</artifactId>
+			<artifactId>s3</artifactId>
 			<version>2.21.29</version>
 		</dependency>
-		<dependency>
-			<groupId>software.amazon.awssdk</groupId>
-			<artifactId>auth</artifactId>
-			<version>2.21.29</version>
-		</dependency>
-
-		<!-- AWS SSM SDK for Parameter Store -->
-		<dependency>
-			<groupId>software.amazon.awssdk</groupId>
-			<artifactId>ssm</artifactId>
-			<version>2.21.29</version>
-		</dependency>
-
-		<!-- AWS DynamoDB SDK -->
 		<dependency>
 			<groupId>software.amazon.awssdk</groupId>
 			<artifactId>dynamodb</artifactId>
 			<version>2.21.29</version>
 		</dependency>
-
-		<!-- For SRP authentication -->
 		<dependency>
-			<groupId>org.bouncycastle</groupId>
-			<artifactId>bcprov-jdk15on</artifactId>
-			<version>1.70</version>
+			<groupId>software.amazon.awssdk</groupId>
+			<artifactId>dynamodb-enhanced</artifactId>
+			<version>2.21.29</version>
 		</dependency>
 	</dependencies>
 

@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Spring Boot Demo Application on AWS Lambda
+Description: Spring Boot Player Application on AWS Lambda with S3 Media Processing
 
 Parameters:
   Stage:
@@ -8,7 +8,54 @@ Parameters:
     Default: dev
     Description: Stage name for the deployment
 
+Globals:
+  Function:
+    Timeout: 60
+    MemorySize: 2048
+    Runtime: java21
+
 Resources:
+  # DynamoDB Table for Videos
+  VideosTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-videos"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: videoId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: videoId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: false
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      Tags:
+        - Key: Project
+          Value: !Ref AWS::StackName
+
+  # S3 Bucket for media uploads
+  VideosBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-s3-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Suspended
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - Key: Project
+          Value: !Ref AWS::StackName
+
   # CloudWatch Log Group for Lambda Function
   DemoFunctionLogGroup:
     Type: AWS::Logs::LogGroup
@@ -16,7 +63,7 @@ Resources:
       LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-func"
       RetentionInDays: 14
 
-  # Main Lambda Function
+  # Main Lambda Function (SAM)
   DemoFunction:
     Type: AWS::Serverless::Function
     DependsOn: DemoFunctionLogGroup
@@ -24,9 +71,6 @@ Resources:
       FunctionName: !Sub "${AWS::StackName}-func"
       CodeUri: target/demo-lambda.jar
       Handler: com.example.demo.handler.StreamLambdaHandler::handleRequest
-      Runtime: java21
-      Timeout: 60
-      MemorySize: 2048
       Policies:
         - Version: '2012-10-17'
           Statement:
@@ -36,25 +80,49 @@ Resources:
                 - logs:CreateLogStream
                 - logs:PutLogEvents
               Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-func:*"
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:Query
+                - dynamodb:Scan
+              Resource: !GetAtt VideosTable.Arn
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:GetObjectMetadata
+                - s3:HeadObject
+                - s3:PutObject
+                - s3:DeleteObject
+                - s3:GetObjectVersion
+                - s3:ListBucket
+              Resource: 
+                - !Sub "arn:aws:s3:::${VideosBucket}"
+                - !Sub "arn:aws:s3:::${VideosBucket}/*"
       Environment:
         Variables:
           STAGE: !Ref Stage
-          SPRING_PROFILES_ACTIVE: !Ref Stage
+          SPRING_PROFILES_ACTIVE: lambda
+          DYNAMODB_VIDEOS_TABLE: !Ref VideosTable
+          S3_VIDEOS_BUCKET: !Ref VideosBucket
+          CLOUDFRONT_BASE_URL: !Sub "https://${VideosBucket}.s3.${AWS::Region}.amazonaws.com"
       Events:
         HealthApi:
           Type: Api
           Properties:
-            Path: /health
+            Path: /api/v1/health
             Method: get
             RestApiId: !Ref DemoApi
-        AllPaths:
+        ProxyApi:
           Type: Api
           Properties:
             Path: /{proxy+}
             Method: ANY
             RestApiId: !Ref DemoApi
 
-  # API Gateway
+  # API Gateway (SAM)
   DemoApi:
     Type: AWS::Serverless::Api
     Properties:
@@ -76,20 +144,37 @@ Resources:
       RetentionInDays: 14
 
 Outputs:
-  ApiUrl:
-    Description: "API Gateway endpoint URL for Demo function"
+  # API Gateway URL
+  DemoApiUrl:
+    Description: "API Gateway endpoint URL"
     Value: !Sub "https://${DemoApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/"
     Export:
-      Name: !Sub "${AWS::StackName}-ApiUrl-${Stage}"
+      Name: !Sub "${AWS::StackName}-api-url"
 
-  DemoFunction:
-    Description: "Demo Lambda Function ARN"
-    Value: !GetAtt DemoFunction.Arn
+  # S3 Bucket Name
+  S3BucketName:
+    Description: "S3 bucket name for video uploads"
+    Value: !Ref VideosBucket
     Export:
-      Name: !Sub "${AWS::StackName}-DemoFunction-${Stage}"
+      Name: !Sub "${AWS::StackName}-s3-bucket"
 
+  # DynamoDB Table Name
+  DynamoDBTableName:
+    Description: "DynamoDB table name for videos"
+    Value: !Ref VideosTable
+    Export:
+      Name: !Sub "${AWS::StackName}-dynamodb-table"
+
+  # Lambda Function Name
+  LambdaFunctionName:
+    Description: "Lambda function name"
+    Value: !Ref DemoFunction
+    Export:
+      Name: !Sub "${AWS::StackName}-lambda-function"
+
+  # Health Endpoint
   HealthEndpoint:
     Description: "Health check endpoint URL"
-    Value: !Sub "https://${DemoApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/health"
+    Value: !Sub "https://${DemoApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/api/v1/health"
     Export:
-      Name: !Sub "${AWS::StackName}-HealthEndpoint-${Stage}"
+      Name: !Sub "${AWS::StackName}-health-endpoint"

@@ -31,10 +31,12 @@ build/
 
 ### VS Code ###
 .vscode/
-*.toml
+
+packaged-template.yaml
+samconfig.toml
 
 .env
 *organizer.sh
 .DS_Store
 /assets/
-docker
+docker/

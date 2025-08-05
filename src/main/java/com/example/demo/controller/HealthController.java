@@ -20,7 +20,7 @@ import java.time.LocalDateTime;
  * @see com.example.demo.dto.common.ApiResponse
  */
 @RestController
-@RequestMapping("/health")
+@RequestMapping("${app.api.base-path}/health")
 public class HealthController {
 
         /**
