@@ -1,13 +1,13 @@
 #!/bin/bash
 
-# Spring Boot Serverless Player Application Deployment Script
+# Nebulax Serverless Application Deployment Script
 # Complete deployment for AWS Lambda with API Gateway, DynamoDB, and S3
 
 set -e  # Exit on any error
 
 # Configuration
-PROJECT_NAME="player-app"
-STACK_NAME="player-app"
+PROJECT_NAME="nebulax"
+STACK_NAME="nebulax"
 REGION="us-east-1"
 STAGE="dev"
 
@@ -919,7 +919,7 @@ show_logs() {
     print_step "Fetching Recent Logs"
     
     # Get the Lambda function name
-    FUNCTION_NAME="player-app-func"
+    FUNCTION_NAME="nebulax-func"
     LOG_GROUP="/aws/lambda/${FUNCTION_NAME}"
     
     # Check if log group exists
@@ -1293,7 +1293,7 @@ cleanup_deployment() {
 
 # Function to show help
 show_help() {
-    echo "Spring Boot Player Application Deployment Script"
+    echo "Nebulax Application Deployment Script"
     echo ""
     echo "Usage: $0 [OPTIONS]"
     echo ""
@@ -1313,7 +1313,7 @@ main() {
     # Parse arguments first to handle cleanup differently
     case "${1:-}" in
         -h|--help)
-            print_header "Spring Boot Player Application Deployment"
+            print_header "Nebulax Application Deployment"
             show_help
             exit 0
             ;;
@@ -1323,19 +1323,19 @@ main() {
             exit 0
             ;;
         -t|--test)
-            print_header "Spring Boot Player Application Deployment"
+            print_header "Nebulax Application Deployment"
             test_deployment
             exit 0
             ;;
         -b|--build)
-            print_header "Spring Boot Player Application Deployment"
+            print_header "Nebulax Application Deployment"
             check_prerequisites
             build_project
             print_success "Build complete"
             exit 0
             ;;
         -u|--update)
-            print_header "Spring Boot Player Application Update"
+            print_header "🚀 Nebulax Application Update"
             check_prerequisites
             
             # Use default configuration for update
@@ -1362,7 +1362,7 @@ main() {
             exit 0
             ;;
         -s|--setup)
-            print_header "Spring Boot Player Application Deployment"
+            print_header "Nebulax Application Deployment"
             check_prerequisites
             get_deployment_configuration
             create_config
@@ -1382,7 +1382,7 @@ main() {
             ;;
         "")
             # Full deployment
-            print_header "Spring Boot Player Application Deployment"
+            print_header "Nebulax Application Deployment"
             check_prerequisites
             get_deployment_configuration
             create_config
@@ -1392,7 +1392,7 @@ main() {
             test_deployment
             ;;
         *)
-            print_header "Spring Boot Player Application Deployment"
+            print_header "Nebulax Application Deployment"
             print_error "Unknown option: $1"
             show_help
             exit 1
