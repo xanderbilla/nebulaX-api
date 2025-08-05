@@ -52,7 +52,7 @@ You can override default behavior using environment variables:
 
 | Variable     | Description                            | Default            |
 | ------------ | -------------------------------------- | ------------------ |
-| `STACK_NAME` | The name of the CloudFormation stack   | `spring-boot-demo` |
+| `STACK_NAME` | The name of the CloudFormation stack   | `nebulaX` |
 | `REGION`     | AWS Region to deploy to                | `us-east-1`        |
 | `STAGE`      | Deployment stage (e.g., `dev`, `prod`) | `dev`              |
 
