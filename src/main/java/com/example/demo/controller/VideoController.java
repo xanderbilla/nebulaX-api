@@ -18,6 +18,12 @@ import org.springframework.web.bind.annotation.*;
 import jakarta.validation.Valid;
 import java.util.List;
 
+/**
+ * REST Controller for video management operations.
+ * 
+ * @author Vikas Singh
+ * @since August 3, 2025
+ */
 @Slf4j
 @RestController
 @RequestMapping("${app.api.base-path}/videos")
@@ -26,6 +32,11 @@ public class VideoController {
 
     private final VideoService videoService;
 
+    /**
+     * Retrieves all videos from the system.
+     * 
+     * @return ResponseEntity containing list of all videos
+     */
     @GetMapping
     public ResponseEntity<ApiResponse<List<Video>>> getAllVideos() {
         log.info("Fetching all videos");
@@ -49,6 +60,12 @@ public class VideoController {
         }
     }
 
+    /**
+     * Retrieves a specific video by its ID.
+     * 
+     * @param videoId The unique identifier of the video
+     * @return ResponseEntity containing the requested video
+     */
     @GetMapping("/{videoId}")
     public ResponseEntity<ApiResponse<Video>> getVideo(@PathVariable String videoId) {
         log.info("Fetching video with ID: {}", videoId);
@@ -69,10 +86,13 @@ public class VideoController {
         }
     }
 
-    // Basic create video endpoint removed - use upload workflow instead
-    // Users should use POST /videos/upload/initiate followed by POST
-    // /videos/upload/complete
-
+    /**
+     * Updates an existing video's metadata.
+     * 
+     * @param videoId The unique identifier of the video to update
+     * @param request The update request containing new video metadata
+     * @return ResponseEntity containing the updated video
+     */
     @PutMapping("/{videoId}")
     public ResponseEntity<ApiResponse<Video>> updateVideo(
             @PathVariable String videoId,
@@ -104,6 +124,12 @@ public class VideoController {
         }
     }
 
+    /**
+     * Deletes a video from the system.
+     * 
+     * @param videoId The unique identifier of the video to delete
+     * @return ResponseEntity with deletion confirmation message
+     */
     @DeleteMapping("/{videoId}")
     public ResponseEntity<ApiResponse<String>> deleteVideo(@PathVariable String videoId) {
         log.info("Deleting video with ID: {}", videoId);
@@ -124,16 +150,19 @@ public class VideoController {
         }
     }
 
-    // ==================== NEW UPLOAD WORKFLOW ENDPOINTS ====================
-
     /**
-     * POST /videos/upload/initiate
-     * Initiates upload process and returns presigned URLs
+     * Initiates upload process and returns presigned URLs for specified file types.
+     * 
+     * @param request The upload initiation request containing metadata and file
+     *                type flags
+     * @return ResponseEntity containing presigned URLs for requested file types
      */
     @PostMapping("/upload/initiate")
     public ResponseEntity<ApiResponse<InitiateUploadResponse>> initiateUpload(
             @Valid @RequestBody InitiateUploadRequest request) {
-        log.info("Initiating upload for title: {}, category: {}", request.getTitle(), request.getCategory());
+        log.info("Initiating upload for title: {}, category: {}, posterUrl: {}, trailerUrl: {}, videoUrl: {}",
+                request.getTitle(), request.getCategory(),
+                request.isPosterUrl(), request.isTrailerUrl(), request.isVideoUrl());
 
         try {
             InitiateUploadResponse uploadResponse = videoService.initiateUpload(request);
@@ -155,13 +184,16 @@ public class VideoController {
     }
 
     /**
-     * POST /videos/upload/complete
-     * Completes upload process after files are uploaded to S3
+     * Completes upload process after files are uploaded to S3.
+     * 
+     * @param request The upload completion request with videoId and file type flags
+     * @return ResponseEntity containing the completed video
      */
     @PostMapping("/upload/complete")
     public ResponseEntity<ApiResponse<Video>> completeUpload(
             @Valid @RequestBody CompleteUploadRequest request) {
-        log.info("Completing upload for videoId: {}", request.getVideoId());
+        log.info("Completing upload for videoId: {}, poster: {}, trailer: {}, video: {}",
+                request.getVideoId(), request.isPoster(), request.isTrailer(), request.isVideo());
 
         try {
             Video video = videoService.completeUpload(request);
@@ -182,21 +214,22 @@ public class VideoController {
         }
     }
 
-    // ==================== FILE UPDATE WORKFLOW ENDPOINTS ====================
-
     /**
-     * POST /videos/{videoId}/update/initiate
-     * Initiates file update process and returns presigned URLs for updating video files
+     * Initiates file update process and returns presigned URLs for updating video
+     * files.
+     * 
+     * @param request The file update initiation request with videoId and file type
+     *                flags
+     * @return ResponseEntity containing presigned URLs for requested file types
      */
-    @PostMapping("/{videoId}/update/initiate")
+    @PostMapping("/update/initiate")
     public ResponseEntity<ApiResponse<InitiateUploadResponse>> initiateFileUpdate(
-            @PathVariable String videoId,
             @Valid @RequestBody InitiateFileUpdateRequest request) {
-        log.info("Initiating file update for videoId: {} with video:{}, poster:{}, trailer:{}", 
-                videoId, request.isIncludeVideo(), request.isIncludePoster(), request.isIncludeTrailer());
+        log.info("Initiating file update for videoId: {} with posterUrl: {}, trailerUrl: {}, videoUrl: {}",
+                request.getVideoId(), request.isPosterUrl(), request.isTrailerUrl(), request.isVideoUrl());
 
         try {
-            InitiateUploadResponse uploadResponse = videoService.initiateFileUpdate(videoId, request);
+            InitiateUploadResponse uploadResponse = videoService.initiateFileUpdate(request.getVideoId(), request);
 
             ApiResponse<InitiateUploadResponse> response = ApiResponse.success(
                     "File update initiated successfully", uploadResponse);
@@ -204,7 +237,7 @@ public class VideoController {
             return ResponseEntity.ok(response);
 
         } catch (Exception e) {
-            log.error("Error initiating file update for videoId: {}", videoId, e);
+            log.error("Error initiating file update for videoId: {}", request.getVideoId(), e);
 
             ApiResponse<InitiateUploadResponse> errorResponse = ApiResponse.error(
                     "Failed to initiate file update: " + e.getMessage(),
@@ -215,18 +248,20 @@ public class VideoController {
     }
 
     /**
-     * POST /videos/{videoId}/update/complete
-     * Completes file update process after new files are uploaded to S3
+     * Completes file update process after new files are uploaded to S3.
+     * 
+     * @param request The file update completion request with videoId and file type
+     *                flags
+     * @return ResponseEntity containing the updated video
      */
-    @PostMapping("/{videoId}/update/complete")
+    @PostMapping("/update/complete")
     public ResponseEntity<ApiResponse<Video>> completeFileUpdate(
-            @PathVariable String videoId,
             @Valid @RequestBody CompleteFileUpdateRequest request) {
-        log.info("Completing file update for videoId: {}, poster: {}, trailer: {}", 
-                videoId, request.isPoster(), request.isTrailer());
+        log.info("Completing file update for videoId: {}, poster: {}, trailer: {}, video: {}",
+                request.getVideoId(), request.isPoster(), request.isTrailer(), request.isVideo());
 
         try {
-            Video video = videoService.completeFileUpdate(videoId, request);
+            Video video = videoService.completeFileUpdate(request.getVideoId(), request);
 
             ApiResponse<Video> response = ApiResponse.success(
                     "File update completed successfully", video);
@@ -234,7 +269,7 @@ public class VideoController {
             return ResponseEntity.ok(response);
 
         } catch (Exception e) {
-            log.error("Error completing file update for videoId: {}", videoId, e);
+            log.error("Error completing file update for videoId: {}", request.getVideoId(), e);
 
             ApiResponse<Video> errorResponse = ApiResponse.error(
                     "Failed to complete file update: " + e.getMessage(),

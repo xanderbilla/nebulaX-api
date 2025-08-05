@@ -12,6 +12,17 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
+/**
+ * Domain model representing a video entity in the Nebulax system.
+ * Stores video metadata, file URLs, and categorization information in DynamoDB.
+ * Supports multiple content types (video, trailer, poster) and streaming categories.
+ * 
+ * @author Xander Billa
+ * @since August 3, 2025
+ * @see com.example.demo.repository.VideoRepository
+ * @see com.example.demo.service.VideoService
+ * @see software.amazon.awssdk.enhanced.dynamodb.mapper.annotations.DynamoDbBean
+ */
 @Data
 @Builder
 @NoArgsConstructor

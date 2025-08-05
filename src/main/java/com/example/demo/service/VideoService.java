@@ -32,6 +32,17 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
+/**
+ * Core business service for video management operations in Nebulax system.
+ * Handles video upload workflows, metadata management, S3 presigned URL generation,
+ * and complete CRUD operations for video entities with DynamoDB persistence.
+ * 
+ * @author Vikas Singh
+ * @since August 3, 2025
+ * @see com.example.demo.model.Video
+ * @see com.example.demo.repository.VideoRepository
+ * @see com.example.demo.controller.VideoController
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -168,59 +179,16 @@ public class VideoService {
     }
 
     /**
-     * Initiate video file update - generates presigned URLs for updating video files
-     */
-    public InitiateUploadResponse initiateFileUpdate(String videoId, InitiateUploadRequest request) {
-        log.info("Initiating file update for videoId: {}", videoId);
-
-        try {
-            Video existingVideo = getVideoById(videoId);
-            
-            // Use existing folder path structure - cannot be changed during update
-            String s3FolderPath = existingVideo.getFolderPath();
-            
-            // Generate presigned URLs for requested file updates
-            Map<String, String> uploadUrls = new HashMap<>();
-            
-            // Always allow main video update
-            uploadUrls.put("video", generatePresignedUrl(s3FolderPath + "/main.mp4"));
-            
-            // Only generate URLs for requested file types
-            if (request.isIncludePoster()) {
-                uploadUrls.put("poster", generatePresignedUrl(s3FolderPath + "/poster.jpg"));
-            }
-            
-            if (request.isIncludeTrailer()) {
-                uploadUrls.put("trailer", generatePresignedUrl(s3FolderPath + "/trailer.mp4"));
-            }
-
-            String primaryS3Key = s3FolderPath + "/main.mp4";
-
-            log.info("Generated file update URLs for videoId: {}, s3Key: {}", videoId, primaryS3Key);
-
-            return InitiateUploadResponse.builder()
-                    .videoId(videoId)
-                    .uploadUrls(uploadUrls)
-                    .s3Key(primaryS3Key)
-                    .folderPath(s3FolderPath)
-                    .build();
-
-        } catch (Exception e) {
-            log.error("Error initiating file update for videoId: {}", videoId, e);
-            throw new VideoProcessingException("Failed to initiate file update: " + e.getMessage(), e);
-        }
-    }
-
-    /**
-     * Initiate video file update with simplified request - generates presigned URLs for updating specific file types
+     * Initiate video file update - generates presigned URLs for updating specific
+     * file types
      */
     public InitiateUploadResponse initiateFileUpdate(String videoId, InitiateFileUpdateRequest request) {
-        log.info("Initiating file update for videoId: {} with video:{}, poster:{}, trailer:{}", 
-                videoId, request.isIncludeVideo(), request.isIncludePoster(), request.isIncludeTrailer());
+        log.info("Initiating file update for videoId: {} with posterUrl: {}, trailerUrl: {}, videoUrl: {}",
+                videoId, request.isPosterUrl(), request.isTrailerUrl(), request.isVideoUrl());
 
         try {
             Video existingVideo = getVideoById(videoId);
-            
+
             // Use existing folder path or allow override if provided
             String s3FolderPath;
             if (request.getFolderPath() != null && !request.getFolderPath().trim().isEmpty()) {
@@ -230,31 +198,31 @@ public class VideoService {
                 // Use existing folder path
                 s3FolderPath = existingVideo.getFolderPath();
             }
-            
+
             // Generate presigned URLs based on the requested types
             Map<String, String> uploadUrls = new HashMap<>();
             String primaryS3Key = s3FolderPath + "/main.mp4"; // Default to video
-            
-            if (request.isIncludeVideo()) {
+
+            if (request.isVideoUrl()) {
                 uploadUrls.put("video", generatePresignedUrl(s3FolderPath + "/main.mp4"));
                 primaryS3Key = s3FolderPath + "/main.mp4";
             }
-            
-            if (request.isIncludePoster()) {
+
+            if (request.isPosterUrl()) {
                 uploadUrls.put("poster", generatePresignedUrl(s3FolderPath + "/poster.jpg"));
                 if (uploadUrls.size() == 1) { // If this is the only selected type
                     primaryS3Key = s3FolderPath + "/poster.jpg";
                 }
             }
-            
-            if (request.isIncludeTrailer()) {
+
+            if (request.isTrailerUrl()) {
                 uploadUrls.put("trailer", generatePresignedUrl(s3FolderPath + "/trailer.mp4"));
                 if (uploadUrls.size() == 1) { // If this is the only selected type
                     primaryS3Key = s3FolderPath + "/trailer.mp4";
                 }
             }
 
-            log.info("Generated file update URLs for videoId: {}, types: {}, primaryS3Key: {}", 
+            log.info("Generated file update URLs for videoId: {}, types: {}, primaryS3Key: {}",
                     videoId, uploadUrls.keySet(), primaryS3Key);
 
             return InitiateUploadResponse.builder()
@@ -280,15 +248,15 @@ public class VideoService {
             Video existingVideo = getVideoById(videoId);
             String s3FolderPath = existingVideo.getFolderPath();
 
-            // Validate files exist in S3 if they were updated
-            String mainVideoKey = s3FolderPath + "/main.mp4";
-            if (!doesS3ObjectExist(mainVideoKey)) {
-                throw new VideoProcessingException("Updated main video file not found in S3: " + mainVideoKey);
+            // Update main video if provided
+            if (request.isVideo()) {
+                String mainVideoKey = s3FolderPath + "/main.mp4";
+                if (!doesS3ObjectExist(mainVideoKey)) {
+                    throw new VideoProcessingException("Updated main video file not found in S3: " + mainVideoKey);
+                }
+                existingVideo.setAccessLink(buildAccessLink(mainVideoKey));
+                existingVideo.setS3Key(mainVideoKey);
             }
-            
-            // Update access link since main video was updated
-            existingVideo.setAccessLink(buildAccessLink(mainVideoKey));
-            existingVideo.setS3Key(mainVideoKey);
 
             // Update poster if provided
             if (request.isPoster()) {
@@ -310,7 +278,7 @@ public class VideoService {
 
             // Update modification timestamp
             existingVideo.setModifiedAt(Instant.now().toString());
-            
+
             // Save updated metadata to DynamoDB
             videoRepository.update(existingVideo);
 
@@ -331,22 +299,24 @@ public class VideoService {
         try {
             Video video = getVideoById(videoId);
 
-            // Delete entire S3 folder recursively if folderPath is present and bucket is configured
+            // Delete entire S3 folder recursively if folderPath is present and bucket is
+            // configured
             if (video.getFolderPath() != null && !video.getFolderPath().isEmpty() &&
                     videosBucketName != null && !videosBucketName.isEmpty()) {
 
                 try {
-                    // Delete all objects in the video's folder (main.mp4, poster.jpg, trailer.mp4, etc.)
+                    // Delete all objects in the video's folder (main.mp4, poster.jpg, trailer.mp4,
+                    // etc.)
                     String folderPrefix = video.getFolderPath() + "/";
                     deleteS3FolderRecursively(folderPrefix);
-                    
+
                     // Extract the parent folder path (category/folder-path) without the videoId
                     String parentFolderPath = extractParentFolderPath(video.getFolderPath());
                     if (parentFolderPath != null && !parentFolderPath.isEmpty()) {
                         // Check if parent folder is empty and delete if so
                         cleanupEmptyParentFolders(parentFolderPath);
                     }
-                    
+
                 } catch (Exception s3e) {
                     log.warn("Failed to delete S3 folder: {}", video.getFolderPath(), s3e);
                     // Continue with DynamoDB deletion even if S3 deletion fails
@@ -452,35 +422,58 @@ public class VideoService {
     // ==================== NEW UPLOAD API METHODS ====================
 
     /**
-     * Initiate upload process - generates presigned URLs for video, poster, and
-     * trailer
+     * Initiate upload process - generates presigned URLs and saves initial metadata
      */
     public InitiateUploadResponse initiateUpload(InitiateUploadRequest request) {
         log.info("Initiating upload for title: {}, category: {}", request.getTitle(), request.getCategory());
 
         try {
-            // Generate unique video ID
+            // Generate unique video ID automatically
             String videoId = UUID.randomUUID().toString();
 
             // Build S3 folder structure based on category
             String s3FolderPath = buildS3FolderPath(request.getCategory(), request.getFolderPath(), videoId);
 
-            // Generate presigned URLs
+            // Save initial video metadata to DynamoDB for later completion
+            String now = Instant.now().toString();
+            Video initialVideo = Video.builder()
+                    .videoId(videoId)
+                    .title(request.getTitle())
+                    .type("video") // main video type
+                    .category(request.getCategory())
+                    .folderPath(s3FolderPath)
+                    .createdAt(now)
+                    .modifiedAt(now)
+                    // URLs will be set during completion
+                    .build();
+
+            // Save initial metadata
+            videoRepository.save(initialVideo);
+
+            // Generate presigned URLs only for requested file types
             Map<String, String> uploadUrls = new HashMap<>();
-            uploadUrls.put("video", generatePresignedUrl(s3FolderPath + "/main.mp4"));
+            String primaryS3Key = s3FolderPath + "/main.mp4"; // Default to video
 
-            // Only generate URLs for requested file types
-            if (request.isIncludePoster()) {
+            if (request.isVideoUrl()) {
+                uploadUrls.put("video", generatePresignedUrl(s3FolderPath + "/main.mp4"));
+            }
+
+            if (request.isPosterUrl()) {
                 uploadUrls.put("poster", generatePresignedUrl(s3FolderPath + "/poster.jpg"));
+                if (uploadUrls.size() == 1) { // If this is the only selected type
+                    primaryS3Key = s3FolderPath + "/poster.jpg";
+                }
             }
 
-            if (request.isIncludeTrailer()) {
+            if (request.isTrailerUrl()) {
                 uploadUrls.put("trailer", generatePresignedUrl(s3FolderPath + "/trailer.mp4"));
+                if (uploadUrls.size() == 1) { // If this is the only selected type
+                    primaryS3Key = s3FolderPath + "/trailer.mp4";
+                }
             }
 
-            String primaryS3Key = s3FolderPath + "/main.mp4";
-
-            log.info("Generated upload URLs for videoId: {}, s3Key: {}", videoId, primaryS3Key);
+            log.info("Generated upload URLs for videoId: {}, types: {}, primaryS3Key: {}",
+                    videoId, uploadUrls.keySet(), primaryS3Key);
 
             return InitiateUploadResponse.builder()
                     .videoId(videoId)
@@ -497,28 +490,39 @@ public class VideoService {
 
     /**
      * Complete upload process - validates S3 objects exist and saves metadata to
-     * DynamoDB
+     * DynamoDB. Requires metadata to be saved during initiate phase.
      */
     public Video completeUpload(CompleteUploadRequest request) {
         log.info("Completing upload for videoId: {}", request.getVideoId());
 
         try {
-            // Build S3 folder path
-            String s3FolderPath = buildS3FolderPath(request.getCategory(), request.getFolderPath(),
-                    request.getVideoId());
-
-            // Validate required files exist in S3
-            String mainVideoKey = s3FolderPath + "/main.mp4";
-            if (!doesS3ObjectExist(mainVideoKey)) {
-                throw new VideoProcessingException("Main video file not found in S3: " + mainVideoKey);
+            // Check if video metadata already exists (from initiate phase)
+            Video existingVideo;
+            try {
+                existingVideo = getVideoById(request.getVideoId());
+            } catch (VideoNotFoundException e) {
+                throw new VideoProcessingException(
+                        "Video metadata not found. Please initiate upload first for videoId: " + request.getVideoId());
             }
 
-            // Validate optional files if specified
+            String s3FolderPath = existingVideo.getFolderPath();
+
+            // Validate files exist in S3 if they were uploaded
+            if (request.isVideo()) {
+                String mainVideoKey = s3FolderPath + "/main.mp4";
+                if (!doesS3ObjectExist(mainVideoKey)) {
+                    throw new VideoProcessingException("Main video file not found in S3: " + mainVideoKey);
+                }
+                existingVideo.setAccessLink(buildAccessLink(mainVideoKey));
+                existingVideo.setS3Key(mainVideoKey);
+            }
+
             if (request.isPoster()) {
                 String posterKey = s3FolderPath + "/poster.jpg";
                 if (!doesS3ObjectExist(posterKey)) {
                     throw new VideoProcessingException("Poster file not found in S3: " + posterKey);
                 }
+                existingVideo.setPosterUrl(buildAccessLink(posterKey));
             }
 
             if (request.isTrailer()) {
@@ -526,31 +530,17 @@ public class VideoService {
                 if (!doesS3ObjectExist(trailerKey)) {
                     throw new VideoProcessingException("Trailer file not found in S3: " + trailerKey);
                 }
+                existingVideo.setTrailerUrl(buildAccessLink(trailerKey));
             }
 
-            // All validations passed - create Video metadata
-            String now = Instant.now().toString();
-            String accessLink = buildAccessLink(mainVideoKey);
+            // Update modification timestamp
+            existingVideo.setModifiedAt(Instant.now().toString());
 
-            Video video = Video.builder()
-                    .videoId(request.getVideoId())
-                    .title(request.getTitle())
-                    .type("video") // main video type
-                    .category(request.getCategory())
-                    .folderPath(s3FolderPath)
-                    .accessLink(accessLink)
-                    .s3Key(mainVideoKey)
-                    .createdAt(now)
-                    .modifiedAt(now)
-                    .posterUrl(request.isPoster() ? buildAccessLink(s3FolderPath + "/poster.jpg") : null)
-                    .trailerUrl(request.isTrailer() ? buildAccessLink(s3FolderPath + "/trailer.mp4") : null)
-                    .build();
-
-            // Save to DynamoDB
-            videoRepository.save(video);
+            // Save updated metadata to DynamoDB
+            videoRepository.update(existingVideo);
 
             log.info("Successfully completed upload for videoId: {}", request.getVideoId());
-            return video;
+            return existingVideo;
 
         } catch (VideoProcessingException e) {
             throw e; // Re-throw our custom exceptions
@@ -624,7 +614,7 @@ public class VideoService {
                     .build();
 
             ListObjectsV2Response listResponse = s3Client.listObjectsV2(listRequest);
-            
+
             if (listResponse.contents().isEmpty()) {
                 log.info("No objects found in folder: {}", folderPrefix);
                 return;
@@ -663,28 +653,29 @@ public class VideoService {
         if (fullFolderPath == null || fullFolderPath.isEmpty()) {
             return null;
         }
-        
+
         int lastSlashIndex = fullFolderPath.lastIndexOf('/');
         if (lastSlashIndex > 0) {
             return fullFolderPath.substring(0, lastSlashIndex);
         }
-        
+
         return null; // No parent folder
     }
 
     /**
      * Clean up empty parent folders recursively
-     * Example: If tv/breaking-bad/season-1 is empty, delete it and check if tv/breaking-bad is empty
+     * Example: If tv/breaking-bad/season-1 is empty, delete it and check if
+     * tv/breaking-bad is empty
      */
     private void cleanupEmptyParentFolders(String folderPath) {
         try {
             // Check if folder is empty
             if (isS3FolderEmpty(folderPath + "/")) {
                 log.info("Folder is empty, attempting cleanup: {}", folderPath);
-                
+
                 // Try to delete the folder (which should be empty)
                 deleteS3FolderRecursively(folderPath + "/");
-                
+
                 // Recursively check parent folder
                 String parentPath = extractParentFolderPath(folderPath);
                 if (parentPath != null && !parentPath.isEmpty()) {

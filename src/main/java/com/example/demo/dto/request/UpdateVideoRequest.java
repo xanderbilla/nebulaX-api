@@ -8,6 +8,16 @@ import lombok.NoArgsConstructor;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
+/**
+ * Request DTO for updating video metadata information.
+ * Allows modification of video title, type, category, and associated URLs.
+ * Provides validation for content type and category values.
+ * 
+ * @author Xander Billa
+ * @since August 3, 2025
+ * @see com.example.demo.service.VideoService#updateVideo(String, UpdateVideoRequest)
+ * @see com.example.demo.model.Video
+ */
 @Data
 @Builder
 @NoArgsConstructor

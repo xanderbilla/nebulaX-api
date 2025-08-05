@@ -6,9 +6,18 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.Pattern;
-import jakarta.validation.constraints.Size;
+import jakarta.validation.constraints.AssertTrue;
 
+/**
+ * Request DTO for completing video upload process after files are uploaded to S3.
+ * Confirms which files were successfully uploaded and updates video metadata accordingly.
+ * Validates that at least one file type (poster, trailer, video) was uploaded.
+ * 
+ * @author Xander Billa
+ * @since August 3, 2025
+ * @see com.example.demo.service.VideoService#completeUpload(CompleteUploadRequest)
+ * @see com.example.demo.dto.request.InitiateUploadRequest
+ */
 @Data
 @Builder
 @NoArgsConstructor
@@ -18,17 +27,14 @@ public class CompleteUploadRequest {
     @NotBlank(message = "Video ID cannot be blank")
     private String videoId;
 
-    @NotBlank(message = "Title cannot be blank")
-    @Size(min = 1, max = 255, message = "Title must be between 1 and 255 characters")
-    private String title;
-
-    @NotBlank(message = "Category cannot be blank")
-    @Pattern(regexp = "^(tv|movie|live)$", message = "Category must be one of: tv, movie, live")
-    private String category;
-
-    @NotBlank(message = "Folder path cannot be blank")
-    private String folderPath;
-
+    // Boolean flags to indicate which files were uploaded
     private boolean poster;
     private boolean trailer;
+    private boolean video;
+
+    // Custom validation to ensure at least one file type was uploaded
+    @AssertTrue(message = "At least one file type must be completed (poster, trailer, or video)")
+    public boolean isAtLeastOneFileCompleted() {
+        return poster || trailer || video;
+    }
 }

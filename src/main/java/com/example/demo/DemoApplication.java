@@ -9,6 +9,12 @@ import com.amazonaws.services.lambda.runtime.RequestHandler;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
+/**
+ * Main Spring Boot application class for Nebulax.
+ * 
+ * @author Vikas Singh
+ * @since August 5, 2025
+ */
 @SpringBootApplication
 public class DemoApplication implements RequestHandler<AwsProxyRequest, AwsProxyResponse> {
 

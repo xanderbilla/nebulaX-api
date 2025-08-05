@@ -14,6 +14,17 @@ import org.springframework.context.ConfigurableApplicationContext;
 import java.util.Arrays;
 import java.util.List;
 
+/**
+ * AWS Lambda handler for processing S3 video upload events automatically.
+ * Triggers video processing workflows when video files are uploaded to S3 bucket.
+ * Supports multiple video formats and provides automatic metadata extraction.
+ * 
+ * @author Xander Billa
+ * @since August 3, 2025
+ * @see com.example.demo.service.VideoService
+ * @see com.amazonaws.services.lambda.runtime.events.S3Event
+ * @see com.example.demo.model.Video
+ */
 public class S3VideoProcessorHandler implements RequestHandler<S3Event, String> {
 
     private static final Logger logger = LoggerFactory.getLogger(S3VideoProcessorHandler.class);

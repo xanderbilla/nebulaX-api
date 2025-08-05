@@ -19,6 +19,16 @@ import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
 import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
 import software.amazon.awssdk.services.s3.model.NoSuchBucketException;
 
+/**
+ * Service for setting up local development environment with sample data.
+ * Creates test videos, sample assets, and development configuration
+ * to enable rapid local testing and development workflows.
+ * 
+ * @author Xander Billa
+ * @since August 5, 2025
+ * @see com.example.demo.service.VideoService
+ * @see com.example.demo.model.Video
+ */
 @Slf4j
 @Service
 @Profile("local")

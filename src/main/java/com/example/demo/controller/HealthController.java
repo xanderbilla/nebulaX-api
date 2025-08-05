@@ -8,32 +8,22 @@ import org.springframework.web.bind.annotation.*;
 import java.time.LocalDateTime;
 
 /**
- * Health check controller for monitoring application status.
- * Provides simple health check functionality without detailed metrics.
- * 
- * Features:
- * - Basic application health status monitoring
- * - Simple success/failure response
+ * Health check controller for application monitoring.
  * 
  * @author Vikas Singh
- * @since June 18, 2025
- * @see com.example.demo.dto.common.ApiResponse
+ * @since August 5, 2025
  */
 @RestController
 @RequestMapping("${app.api.base-path}/health")
 public class HealthController {
 
         /**
-         * Performs application health check and returns simple health status.
+         * Health check endpoint to verify application status.
          * 
-         * This endpoint provides:
-         * - Basic application health status
-         * - Simple success/failure indication
-         * 
-         * @return ResponseEntity containing basic health check results
+         * @return ResponseEntity with health status information
          */
         @GetMapping
-        public ResponseEntity<ApiResponse<String>> getHealth() {
+        public ResponseEntity<ApiResponse<String>> health() {
                 try {
                         ApiResponse<String> response = ApiResponse.<String>builder()
                                         .success(true)

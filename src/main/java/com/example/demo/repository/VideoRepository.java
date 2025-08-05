@@ -10,6 +10,17 @@ import software.amazon.awssdk.enhanced.dynamodb.TableSchema;
 
 import java.util.Optional;
 
+/**
+ * Repository interface for Video entity DynamoDB operations.
+ * Provides enhanced DynamoDB client integration with comprehensive CRUD operations,
+ * batch processing capabilities, and optimized query patterns for video management.
+ * 
+ * @author Xander Billa
+ * @since August 5, 2025
+ * @see com.example.demo.model.Video
+ * @see com.example.demo.service.VideoService
+ * @see software.amazon.awssdk.enhanced.dynamodb.DynamoDbEnhancedClient
+ */
 @Repository
 public class VideoRepository {
 

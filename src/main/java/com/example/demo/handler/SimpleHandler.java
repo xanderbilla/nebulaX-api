@@ -10,6 +10,14 @@ import java.util.Map;
 
 /**
  * Simple Lambda handler for testing basic functionality without Spring Boot overhead.
+ * Provides lightweight endpoint testing and basic health check functionality.
+ * This handler can be used for performance testing and minimal response validation.
+ * 
+ * @author Xander Billa
+ * @since August 4, 2025
+ * @see com.amazonaws.services.lambda.runtime.RequestHandler
+ * @see com.amazonaws.services.lambda.runtime.events.APIGatewayProxyRequestEvent
+ * @see com.amazonaws.services.lambda.runtime.events.APIGatewayProxyResponseEvent
  */
 public class SimpleHandler implements RequestHandler<APIGatewayProxyRequestEvent, APIGatewayProxyResponseEvent> {
 

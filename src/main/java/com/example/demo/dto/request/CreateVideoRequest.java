@@ -9,6 +9,16 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
+/**
+ * Request DTO for creating new video entries with complete metadata.
+ * Contains all required fields for video creation including title, type, category, and paths.
+ * Provides comprehensive validation for video metadata and content categorization.
+ * 
+ * @author Xander Billa
+ * @since August 4, 2025
+ * @see com.example.demo.service.VideoService#createVideo(CreateVideoRequest)
+ * @see com.example.demo.model.Video
+ */
 @Data
 @Builder
 @NoArgsConstructor
