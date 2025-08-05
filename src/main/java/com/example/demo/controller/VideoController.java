@@ -3,7 +3,9 @@ package com.example.demo.controller;
 import com.example.demo.dto.common.ApiResponse;
 import com.example.demo.dto.request.UpdateVideoRequest;
 import com.example.demo.dto.request.InitiateUploadRequest;
+import com.example.demo.dto.request.InitiateFileUpdateRequest;
 import com.example.demo.dto.request.CompleteUploadRequest;
+import com.example.demo.dto.request.CompleteFileUpdateRequest;
 import com.example.demo.dto.response.InitiateUploadResponse;
 import com.example.demo.model.Video;
 import com.example.demo.service.VideoService;
@@ -174,6 +176,68 @@ public class VideoController {
 
             ApiResponse<Video> errorResponse = ApiResponse.error(
                     "Failed to complete upload: " + e.getMessage(),
+                    HttpStatus.BAD_REQUEST.value());
+
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(errorResponse);
+        }
+    }
+
+    // ==================== FILE UPDATE WORKFLOW ENDPOINTS ====================
+
+    /**
+     * POST /videos/{videoId}/update/initiate
+     * Initiates file update process and returns presigned URLs for updating video files
+     */
+    @PostMapping("/{videoId}/update/initiate")
+    public ResponseEntity<ApiResponse<InitiateUploadResponse>> initiateFileUpdate(
+            @PathVariable String videoId,
+            @Valid @RequestBody InitiateFileUpdateRequest request) {
+        log.info("Initiating file update for videoId: {} with video:{}, poster:{}, trailer:{}", 
+                videoId, request.isIncludeVideo(), request.isIncludePoster(), request.isIncludeTrailer());
+
+        try {
+            InitiateUploadResponse uploadResponse = videoService.initiateFileUpdate(videoId, request);
+
+            ApiResponse<InitiateUploadResponse> response = ApiResponse.success(
+                    "File update initiated successfully", uploadResponse);
+
+            return ResponseEntity.ok(response);
+
+        } catch (Exception e) {
+            log.error("Error initiating file update for videoId: {}", videoId, e);
+
+            ApiResponse<InitiateUploadResponse> errorResponse = ApiResponse.error(
+                    "Failed to initiate file update: " + e.getMessage(),
+                    HttpStatus.BAD_REQUEST.value());
+
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(errorResponse);
+        }
+    }
+
+    /**
+     * POST /videos/{videoId}/update/complete
+     * Completes file update process after new files are uploaded to S3
+     */
+    @PostMapping("/{videoId}/update/complete")
+    public ResponseEntity<ApiResponse<Video>> completeFileUpdate(
+            @PathVariable String videoId,
+            @Valid @RequestBody CompleteFileUpdateRequest request) {
+        log.info("Completing file update for videoId: {}, poster: {}, trailer: {}", 
+                videoId, request.isPoster(), request.isTrailer());
+
+        try {
+            Video video = videoService.completeFileUpdate(videoId, request);
+
+            ApiResponse<Video> response = ApiResponse.success(
+                    "File update completed successfully", video);
+
+            return ResponseEntity.ok(response);
+
+        } catch (Exception e) {
+            log.error("Error completing file update for videoId: {}", videoId, e);
+
+            ApiResponse<Video> errorResponse = ApiResponse.error(
+                    "Failed to complete file update: " + e.getMessage(),
                     HttpStatus.BAD_REQUEST.value());
 
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(errorResponse);

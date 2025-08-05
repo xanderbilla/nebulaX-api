@@ -568,25 +568,34 @@ deploy_application() {
     # Create change set name with timestamp
     local change_set_name="changeset-$(date +%Y%m%d-%H%M%S)"
     
-    # Package SAM template using CloudFormation with progress
+    # Package SAM template using CloudFormation with native progress
     print_step "Packaging SAM template with CloudFormation..."
     
-    # Show progress for packaging
+    # Check if JAR file exists
     local jar_file="target/demo-lambda.jar"
     if [ -f "$jar_file" ]; then
-        show_s3_upload_progress "$jar_file" "s3://$USER_S3_BUCKET/$STACK_NAME/"
+        local file_size_mb=$(echo "scale=2; $(stat -f%z "$jar_file" 2>/dev/null || stat -c%s "$jar_file" 2>/dev/null || echo "0") / 1024 / 1024" | bc -l 2>/dev/null || echo "0")
+        print_info "📦 Artifact ready: $(basename "$jar_file") (${file_size_mb} MB)"
     fi
     
-    # Package the template using CloudFormation (works with SAM templates)
-    (
-        aws cloudformation package \
-            --template-file template.yaml \
-            --s3-bucket "$USER_S3_BUCKET" \
-            --s3-prefix "$STACK_NAME" \
-            --output-template-file packaged-template.yaml \
-            --region "$REGION" >/dev/null 2>&1
-    ) &
-    show_spinner $! "Packaging SAM template"
+    # Package the template using CloudFormation with native progress display
+    print_info "🔄 Packaging template and uploading artifacts..."
+    aws cloudformation package \
+        --template-file template.yaml \
+        --s3-bucket "$USER_S3_BUCKET" \
+        --s3-prefix "$STACK_NAME" \
+        --output-template-file packaged-template.yaml \
+        --region "$REGION"
+    
+    local package_status=$?
+    
+    if [ $package_status -ne 0 ]; then
+        print_error "Failed to package SAM template"
+        print_error "Please check if the S3 bucket '$USER_S3_BUCKET' exists and is accessible"
+        exit 1
+    fi
+    
+    print_success "SAM template packaged successfully"
     
     if [[ "$INTERACTIVE_MODE" == "true" ]]; then
         print_step "Creating change set for review..."
@@ -669,6 +678,7 @@ deploy_application() {
         
         # Create changeset for existing stack
         print_step "Creating CloudFormation changeset..."
+        local changeset_status=0
         (
             aws cloudformation create-change-set \
                 --template-body file://packaged-template.yaml \
@@ -677,10 +687,15 @@ deploy_application() {
                 --capabilities CAPABILITY_IAM \
                 --parameters ParameterKey=Stage,ParameterValue="$STAGE" \
                 --region "$REGION" >/dev/null 2>&1
+            echo $? > /tmp/changeset_status
         ) &
         show_spinner $! "Creating changeset"
+        wait $!
         
-        if [ $? -ne 0 ]; then
+        changeset_status=$(cat /tmp/changeset_status 2>/dev/null || echo "1")
+        rm -f /tmp/changeset_status
+        
+        if [ $changeset_status -ne 0 ]; then
             print_error "Failed to create changeset"
             exit 1
         fi
@@ -690,15 +705,21 @@ deploy_application() {
         
         # Execute the changeset
         print_step "Executing CloudFormation changeset"
+        local execute_status=0
         (
             aws cloudformation execute-change-set \
                 --stack-name "$STACK_NAME" \
                 --change-set-name "$change_set_name" \
                 --region "$REGION" >/dev/null 2>&1
+            echo $? > /tmp/execute_status
         ) &
         show_spinner $! "Executing changeset"
+        wait $!
         
-        if [ $? -ne 0 ]; then
+        execute_status=$(cat /tmp/execute_status 2>/dev/null || echo "1")
+        rm -f /tmp/execute_status
+        
+        if [ $execute_status -ne 0 ]; then
             print_error "Failed to execute changeset"
             # Clean up changeset
             aws cloudformation delete-change-set \
@@ -712,6 +733,7 @@ deploy_application() {
         
         # For new stack, deploy directly
         print_step "Deploying new CloudFormation stack"
+        local deploy_status=0
         (
             aws cloudformation deploy \
                 --template-file packaged-template.yaml \
@@ -719,10 +741,15 @@ deploy_application() {
                 --capabilities CAPABILITY_IAM \
                 --parameter-overrides "Stage=$STAGE" \
                 --region "$REGION" >/dev/null 2>&1
+            echo $? > /tmp/deploy_status
         ) &
         show_spinner $! "Creating new stack"
+        wait $!
         
-        if [ $? -ne 0 ]; then
+        deploy_status=$(cat /tmp/deploy_status 2>/dev/null || echo "1")
+        rm -f /tmp/deploy_status
+        
+        if [ $deploy_status -ne 0 ]; then
             print_error "CloudFormation deployment failed"
             exit 1
         fi
@@ -1013,70 +1040,240 @@ show_deployment_logs() {
     print_success "Deployment log monitoring complete"
 }
 cleanup_deployment() {
-    print_warning "This will delete all AWS resources"
+    print_warning "This will delete all AWS resources including S3 buckets and their contents"
     read -p "Are you sure? (y/N): " -n 1 -r
     echo
     
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         print_step "Deleting Resources"
+        local ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null)
         
-        # Delete CloudFormation stack with loading animation
-        if aws cloudformation describe-stacks --stack-name "$STACK_NAME" --region "$REGION" &>/dev/null; then
-            (
-                aws cloudformation delete-stack --stack-name "$STACK_NAME" --region "$REGION" 2>/dev/null || true
-                aws cloudformation wait stack-delete-complete --stack-name "$STACK_NAME" --region "$REGION" 2>/dev/null || true
-                sleep 2  # Simulate processing time
-            ) &
-            show_spinner $! "Deleting CloudFormation stack"
-            wait $!
+        if [ -z "$ACCOUNT_ID" ]; then
+            print_error "Failed to get AWS account ID. Please check your AWS credentials."
+            exit 1
         fi
         
-        # Delete S3 buckets with contents
-        ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+        # Determine bucket names based on configuration
+        local ARTIFACT_BUCKET=""
+        local VIDEOS_BUCKET=""
         
-        # Artifact bucket
+        # Get stack name for bucket naming
+        local ACTUAL_STACK_NAME="$STACK_NAME"
+        if [ -n "$USER_STACK_NAME" ]; then
+            ACTUAL_STACK_NAME="$USER_STACK_NAME"
+        fi
+        
+        # Set bucket names
         if [ -n "$USER_S3_BUCKET" ]; then
             ARTIFACT_BUCKET="$USER_S3_BUCKET"
         else
-            ARTIFACT_BUCKET="${STACK_NAME}-artifact-${ACCOUNT_ID}"
+            ARTIFACT_BUCKET="${ACTUAL_STACK_NAME}-artifact-${ACCOUNT_ID}"
         fi
         
-        # Videos bucket
-        if [ -n "$USER_STACK_NAME" ]; then
-            VIDEOS_BUCKET="${USER_STACK_NAME}-s3-${ACCOUNT_ID}"
+        VIDEOS_BUCKET="${ACTUAL_STACK_NAME}-s3-${ACCOUNT_ID}"
+        
+        print_info "Target buckets:"
+        echo -e "  ${BOLD}Artifact bucket:${NC} $ARTIFACT_BUCKET"
+        echo -e "  ${BOLD}Videos bucket:${NC} $VIDEOS_BUCKET"
+        echo ""
+        
+        # First, empty both S3 buckets completely BEFORE attempting CloudFormation deletion
+        print_step "Step 1: Emptying S3 buckets first"
+        print_info "This ensures CloudFormation can delete the buckets without conflicts"
+        
+        # Function to completely empty S3 bucket
+        empty_bucket_completely() {
+            local bucket_name="$1"
+            local bucket_type="$2"
+            
+            if aws s3api head-bucket --bucket "$bucket_name" --region "$REGION" >/dev/null 2>&1; then
+                print_step "Emptying $bucket_type bucket: $bucket_name"
+                
+                # Delete all object versions and delete markers
+                print_info "🧹 Removing all objects, versions, and markers..."
+                
+                # Get counts first
+                local version_count=$(aws s3api list-object-versions --bucket "$bucket_name" --query 'length(Versions)' --output text 2>/dev/null || echo "0")
+                local marker_count=$(aws s3api list-object-versions --bucket "$bucket_name" --query 'length(DeleteMarkers)' --output text 2>/dev/null || echo "0")
+                local upload_count=$(aws s3api list-multipart-uploads --bucket "$bucket_name" --query 'length(Uploads)' --output text 2>/dev/null || echo "0")
+                
+                print_info "   Found: $version_count versions, $marker_count markers, $upload_count uploads"
+                
+                # Abort all multipart uploads first
+                if [ "$upload_count" != "0" ]; then
+                    print_info "   Aborting multipart uploads..."
+                    aws s3api list-multipart-uploads --bucket "$bucket_name" --query 'Uploads[].{Key:Key,UploadId:UploadId}' --output text 2>/dev/null | while read key upload_id; do
+                        if [ -n "$key" ] && [ -n "$upload_id" ] && [ "$key" != "None" ] && [ "$upload_id" != "None" ]; then
+                            aws s3api abort-multipart-upload --bucket "$bucket_name" --key "$key" --upload-id "$upload_id" >/dev/null 2>&1
+                        fi
+                    done
+                fi
+                
+                # Delete all object versions
+                if [ "$version_count" != "0" ]; then
+                    print_info "   Deleting object versions..."
+                    aws s3api list-object-versions --bucket "$bucket_name" --query 'Versions[].{Key:Key,VersionId:VersionId}' --output text 2>/dev/null | while read key version_id; do
+                        if [ -n "$key" ] && [ -n "$version_id" ] && [ "$key" != "None" ] && [ "$version_id" != "None" ]; then
+                            aws s3api delete-object --bucket "$bucket_name" --key "$key" --version-id "$version_id" >/dev/null 2>&1
+                        fi
+                    done
+                fi
+                
+                # Delete all delete markers
+                if [ "$marker_count" != "0" ]; then
+                    print_info "   Deleting delete markers..."
+                    aws s3api list-object-versions --bucket "$bucket_name" --query 'DeleteMarkers[].{Key:Key,VersionId:VersionId}' --output text 2>/dev/null | while read key version_id; do
+                        if [ -n "$key" ] && [ -n "$version_id" ] && [ "$key" != "None" ] && [ "$version_id" != "None" ]; then
+                            aws s3api delete-object --bucket "$bucket_name" --key "$key" --version-id "$version_id" >/dev/null 2>&1
+                        fi
+                    done
+                fi
+                
+                # Final recursive cleanup
+                aws s3 rm s3://"$bucket_name" --recursive >/dev/null 2>&1
+                
+                # Verify bucket is completely empty
+                local final_count=$(aws s3api list-objects-v2 --bucket "$bucket_name" --query 'KeyCount' --output text 2>/dev/null || echo "0")
+                local final_versions=$(aws s3api list-object-versions --bucket "$bucket_name" --query 'length(Versions)' --output text 2>/dev/null || echo "0")
+                local final_markers=$(aws s3api list-object-versions --bucket "$bucket_name" --query 'length(DeleteMarkers)' --output text 2>/dev/null || echo "0")
+                
+                if [ "$final_count" = "0" ] && [ "$final_versions" = "0" ] && [ "$final_markers" = "0" ]; then
+                    print_success "$bucket_type bucket completely emptied"
+                else
+                    print_warning "$bucket_type bucket may still contain some objects ($final_count objects, $final_versions versions, $final_markers markers)"
+                    
+                    # One more aggressive cleanup attempt
+                    print_info "   Attempting final cleanup..."
+                    aws s3api list-objects-v2 --bucket "$bucket_name" --query 'Contents[].Key' --output text 2>/dev/null | tr '\t' '\n' | while read -r key; do
+                        if [ -n "$key" ] && [ "$key" != "None" ]; then
+                            aws s3api delete-object --bucket "$bucket_name" --key "$key" >/dev/null 2>&1
+                        fi
+                    done
+                fi
+            else
+                print_info "$bucket_type bucket '$bucket_name' not found or already deleted"
+            fi
+        }
+        
+        # Empty both buckets completely first
+        empty_bucket_completely "$ARTIFACT_BUCKET" "artifact"
+        empty_bucket_completely "$VIDEOS_BUCKET" "videos"
+        
+        print_success "Step 1 completed: Both buckets emptied"
+        
+        # Step 2: Now delete CloudFormation stack (buckets should delete cleanly)
+        print_step "Step 2: Deleting CloudFormation stack"
+        # Step 2: Now delete CloudFormation stack (buckets should delete cleanly)
+        print_step "Step 2: Deleting CloudFormation stack"
+        if aws cloudformation describe-stacks --stack-name "$STACK_NAME" --region "$REGION" &>/dev/null; then
+            # Start stack deletion
+            print_info "🗑️  Initiating stack deletion..."
+            if aws cloudformation delete-stack --stack-name "$STACK_NAME" --region "$REGION"; then
+                print_success "Stack deletion initiated"
+                
+                # Wait for deletion with proper error handling and progress
+                print_info "⏳ Waiting for stack deletion to complete..."
+                print_info "   This should work smoothly now that buckets are empty..."
+                
+                local wait_start=$(date +%s)
+                local spinner="/-\|"
+                local i=0
+                
+                # Monitor deletion progress with timeout
+                while true; do
+                    local stack_status=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --region "$REGION" --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "DELETE_COMPLETE")
+                    local elapsed=$(($(date +%s) - wait_start))
+                    
+                    case "$stack_status" in
+                        "DELETE_IN_PROGRESS")
+                            printf "\r${CYAN}${spinner:$i:1}${NC} Deleting stack... (${elapsed}s)"
+                            i=$(((i+1) % 4))
+                            sleep 2
+                            ;;
+                        "DELETE_COMPLETE")
+                            printf "\r${GREEN}✅ Stack deleted successfully (${elapsed}s)${NC}\n"
+                            break
+                            ;;
+                        "DELETE_FAILED")
+                            printf "\r${RED}❌ Stack deletion failed (${elapsed}s)${NC}\n"
+                            print_error "Stack deletion failed even after emptying buckets!"
+                            
+                            # Get stack events to show deletion errors
+                            print_error "Recent stack events:"
+                            aws cloudformation describe-stack-events --stack-name "$STACK_NAME" --region "$REGION" \
+                                --query 'StackEvents[?ResourceStatus==`DELETE_FAILED`].{Resource:LogicalResourceId,Reason:ResourceStatusReason}' \
+                                --output table 2>/dev/null || print_error "Could not retrieve stack events"
+                            
+                            print_warning "You may need to manually resolve these issues and delete the stack from AWS Console"
+                            break
+                            ;;
+                        *)
+                            if [ $elapsed -gt 1800 ]; then  # 30 minute timeout
+                                printf "\r${RED}❌ Stack deletion timeout (${elapsed}s)${NC}\n"
+                                print_error "Stack deletion is taking too long. Current status: $stack_status"
+                                print_warning "Please check AWS Console for manual intervention"
+                                break
+                            fi
+                            printf "\r${YELLOW}${spinner:$i:1}${NC} Stack status: $stack_status (${elapsed}s)"
+                            i=$(((i+1) % 4))
+                            sleep 2
+                            ;;
+                    esac
+                done
+            else
+                print_error "Failed to initiate stack deletion"
+                print_info "Stack may not exist or you may not have permissions"
+            fi
         else
-            VIDEOS_BUCKET="${STACK_NAME}-s3-${ACCOUNT_ID}"
+            print_info "CloudFormation stack not found or already deleted"
         fi
         
-        # Delete artifact bucket
-        if aws s3api head-bucket --bucket "$ARTIFACT_BUCKET" >/dev/null 2>&1; then
-            (
-                # Empty bucket first
-                aws s3 rm s3://"$ARTIFACT_BUCKET" --recursive --quiet 2>/dev/null || true
-                sleep 1
-                # Delete bucket
-                aws s3api delete-bucket --bucket "$ARTIFACT_BUCKET" --region "$REGION" 2>/dev/null || true
-                sleep 1
-            ) &
-            show_spinner $! "Deleting artifact S3 bucket and contents"
-            wait $!
+        print_success "Step 2 completed: CloudFormation stack processing finished"
+        
+        # Step 3: Clean up artifact buckets after successful stack deletion
+        print_step "Step 3: Cleaning up artifact buckets"
+        
+        # Only clean artifact buckets - videos bucket should be handled by CloudFormation
+        if aws s3api head-bucket --bucket "$ARTIFACT_BUCKET" --region "$REGION" >/dev/null 2>&1; then
+            print_info "🗑️  Cleaning up artifact bucket: $ARTIFACT_BUCKET"
+            
+            # Empty artifact bucket completely
+            print_info "   Emptying artifact bucket contents..."
+            
+            # Delete all object versions and delete markers
+            aws s3api delete-objects --bucket "$ARTIFACT_BUCKET" --delete "$(aws s3api list-object-versions --bucket "$ARTIFACT_BUCKET" --query '{Objects: Versions[].{Key: Key, VersionId: VersionId}}' --max-items 1000)" --region "$REGION" >/dev/null 2>&1 || true
+            aws s3api delete-objects --bucket "$ARTIFACT_BUCKET" --delete "$(aws s3api list-object-versions --bucket "$ARTIFACT_BUCKET" --query '{Objects: DeleteMarkers[].{Key: Key, VersionId: VersionId}}' --max-items 1000)" --region "$REGION" >/dev/null 2>&1 || true
+            
+            # Delete multipart uploads
+            aws s3api list-multipart-uploads --bucket "$ARTIFACT_BUCKET" --region "$REGION" --query 'Uploads[].{Key: Key, UploadId: UploadId}' --output text | \
+            while read -r key upload_id; do
+                if [ -n "$upload_id" ]; then
+                    aws s3api abort-multipart-upload --bucket "$ARTIFACT_BUCKET" --key "$key" --upload-id "$upload_id" --region "$REGION" >/dev/null 2>&1 || true
+                fi
+            done
+            
+            # Delete the artifact bucket
+            print_info "   Deleting artifact bucket..."
+            if aws s3api delete-bucket --bucket "$ARTIFACT_BUCKET" --region "$REGION" >/dev/null 2>&1; then
+                print_success "✅ Artifact bucket deleted successfully"
+            else
+                print_warning "Failed to delete artifact bucket: $ARTIFACT_BUCKET"
+                print_info "Please delete manually from AWS Console"
+            fi
+        else
+            print_success "✅ Artifact bucket already removed or doesn't exist"
         fi
         
-        # Delete videos bucket
-        if aws s3api head-bucket --bucket "$VIDEOS_BUCKET" >/dev/null 2>&1; then
-            (
-                # Empty bucket first
-                aws s3 rm s3://"$VIDEOS_BUCKET" --recursive --quiet 2>/dev/null || true
-                sleep 1
-                # Delete bucket
-                aws s3api delete-bucket --bucket "$VIDEOS_BUCKET" --region "$REGION" 2>/dev/null || true
-                sleep 1
-            ) &
-            show_spinner $! "Deleting videos S3 bucket and contents"
-            wait $!
+        # Verify videos bucket was cleaned by CloudFormation
+        if aws s3api head-bucket --bucket "$VIDEOS_BUCKET" --region "$REGION" >/dev/null 2>&1; then
+            print_warning "Videos bucket still exists: $VIDEOS_BUCKET"
+            print_info "This should have been deleted by CloudFormation"
+        else
+            print_success "✅ Videos bucket successfully removed by CloudFormation"
         fi
         
-        # Clean local files with loading
+        # Clean local files
+        print_step "Cleaning local configuration files"
         (
             rm -f samconfig.toml 2>/dev/null || true
             rm -f packaged-template.yaml 2>/dev/null || true
@@ -1085,10 +1282,10 @@ cleanup_deployment() {
             rm -f .env.template 2>/dev/null || true
             sleep 0.5
         ) &
-        show_spinner $! "Cleaning local configuration files"
+        show_spinner $! "Cleaning local files"
         wait $!
         
-        print_success "Cleanup complete - All resources deleted"
+        print_success "🎉 Cleanup completed"
     else
         print_info "Cleanup cancelled"
     fi
@@ -1104,6 +1301,7 @@ show_help() {
     echo "  -h, --help       Show this help message"
     echo "  -c, --clean      Clean up all AWS resources"
     echo "  -b, --build      Build only (no deploy)"
+    echo "  -u, --update     Build and update existing deployment (skip configuration)"
     echo "  -t, --test       Test existing deployment"
     echo "  -s, --setup      Configure deployment settings only"
     echo "  --logs           Show recent CloudWatch logs"
@@ -1134,6 +1332,33 @@ main() {
             check_prerequisites
             build_project
             print_success "Build complete"
+            exit 0
+            ;;
+        -u|--update)
+            print_header "Spring Boot Player Application Update"
+            check_prerequisites
+            
+            # Use default configuration for update
+            USER_STACK_NAME="$STACK_NAME"
+            USER_REGION="$REGION"
+            ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+            USER_S3_BUCKET="${USER_STACK_NAME}-artifact-${ACCOUNT_ID}"
+            
+            print_info "Using existing configuration:"
+            print_info "  Stack Name: $USER_STACK_NAME"
+            print_info "  Region: $USER_REGION"
+            print_info "  S3 Bucket: $USER_S3_BUCKET"
+            
+            # Check if S3 bucket exists, create if not
+            if ! aws s3api head-bucket --bucket "$USER_S3_BUCKET" --region "$USER_REGION" >/dev/null 2>&1; then
+                setup_s3
+            else
+                print_info "Using existing S3 bucket: $USER_S3_BUCKET"
+            fi
+            
+            build_project
+            deploy_application
+            test_deployment
             exit 0
             ;;
         -s|--setup)

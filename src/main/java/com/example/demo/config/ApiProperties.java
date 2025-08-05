@@ -9,7 +9,6 @@ import org.springframework.context.annotation.Configuration;
 @ConfigurationProperties(prefix = "app.api")
 public class ApiProperties {
     private String version = "v1";
-    private String basePath = "/api/" + version;
     
     public String getBasePath() {
         return "/api/" + version;
