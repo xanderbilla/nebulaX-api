@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Spring Boot Player Application on AWS Lambda with S3 Media Processing
+Description: Nebulax Application on AWS Lambda with S3 Media Processing
 
 Parameters:
   Stage:
