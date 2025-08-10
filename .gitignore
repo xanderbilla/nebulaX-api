@@ -40,3 +40,4 @@ samconfig.toml
 .DS_Store
 /assets/
 docker/
+.aws-sam
