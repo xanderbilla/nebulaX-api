@@ -36,7 +36,8 @@ public class VideoController {
     /**
      * Retrieves all videos from the system.
      * 
-     * @return ResponseEntity containing list of all videos with consistent process information
+     * @return ResponseEntity containing list of all videos with consistent process
+     *         information
      */
     @GetMapping
     public ResponseEntity<ApiResponse<List<VideoDetailResponse>>> getAllVideos() {
@@ -68,7 +69,8 @@ public class VideoController {
      * Retrieves a specific video by its ID.
      * 
      * @param videoId The unique identifier of the video
-     * @return ResponseEntity containing the requested video with process information
+     * @return ResponseEntity containing the requested video with process
+     *         information
      */
     @GetMapping("/{videoId}")
     public ResponseEntity<ApiResponse<VideoDetailResponse>> getVideo(@PathVariable String videoId) {
@@ -78,14 +80,16 @@ public class VideoController {
             Video video = videoService.getVideoById(videoId);
             VideoDetailResponse detailResponse = videoService.convertToDetailResponse(video);
 
-            ApiResponse<VideoDetailResponse> response = ApiResponse.success("Video retrieved successfully", detailResponse);
+            ApiResponse<VideoDetailResponse> response = ApiResponse.success("Video retrieved successfully",
+                    detailResponse);
 
             return ResponseEntity.ok(response);
 
         } catch (RuntimeException e) {
             log.error("Error fetching video with ID: {}", videoId, e);
 
-            ApiResponse<VideoDetailResponse> errorResponse = ApiResponse.error(e.getMessage(), HttpStatus.NOT_FOUND.value());
+            ApiResponse<VideoDetailResponse> errorResponse = ApiResponse.error(e.getMessage(),
+                    HttpStatus.NOT_FOUND.value());
 
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(errorResponse);
         }
