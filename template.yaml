@@ -52,6 +52,25 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - "*"
+            AllowedMethods:
+              - GET
+              - PUT
+              - POST
+              - DELETE
+              - HEAD
+            AllowedOrigins:
+              - "http://localhost:*"
+              - "https://localhost:*"
+              - "http://127.0.0.1:*"
+              - "https://127.0.0.1:*"
+            ExposedHeaders:
+              - ETag
+              - x-amz-meta-custom-header
+            MaxAge: 3600
       Tags:
         - Key: Project
           Value: !Ref AWS::StackName
@@ -72,6 +91,25 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - "*"
+            AllowedMethods:
+              - GET
+              - PUT
+              - POST
+              - DELETE
+              - HEAD
+            AllowedOrigins:
+              - "http://localhost:*"
+              - "https://localhost:*"
+              - "http://127.0.0.1:*"
+              - "https://127.0.0.1:*"
+            ExposedHeaders:
+              - ETag
+              - x-amz-meta-custom-header
+            MaxAge: 3600
       Tags:
         - Key: Project
           Value: !Ref AWS::StackName
