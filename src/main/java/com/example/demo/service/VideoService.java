@@ -6,6 +6,7 @@ import com.example.demo.dto.request.InitiateFileUpdateRequest;
 import com.example.demo.dto.request.CompleteUploadRequest;
 import com.example.demo.dto.request.CompleteFileUpdateRequest;
 import com.example.demo.dto.response.InitiateUploadResponse;
+import com.example.demo.dto.response.VideoDetailResponse;
 import com.example.demo.exception.S3OperationException;
 import com.example.demo.exception.VideoNotFoundException;
 import com.example.demo.exception.VideoProcessingException;
@@ -62,6 +63,9 @@ public class VideoService {
     @Value("${app.s3.bucket:}")
     private String videosBucketName;
 
+    @Value("${app.s3.transcoded.bucket:}")
+    private String transcodedBucketName;
+
     public List<Video> getAllVideos() {
         log.info("Fetching all videos from DynamoDB");
 
@@ -81,12 +85,19 @@ public class VideoService {
                         video.setType(item.get("type") != null ? item.get("type").s() : "video");
                         video.setCategory(item.get("category") != null ? item.get("category").s() : "");
                         video.setFolderPath(item.get("folderPath") != null ? item.get("folderPath").s() : "");
-                        video.setAccessLink(item.get("accessLink") != null ? item.get("accessLink").s() : "");
+                        video.setVideoUrl(item.get("videoUrl") != null ? item.get("videoUrl").s() : "");
                         video.setCreatedAt(item.get("createdAt") != null ? item.get("createdAt").s() : "");
                         video.setModifiedAt(item.get("modifiedAt") != null ? item.get("modifiedAt").s() : "");
                         video.setS3Key(item.get("s3Key") != null ? item.get("s3Key").s() : "");
                         video.setPosterUrl(item.get("posterUrl") != null ? item.get("posterUrl").s() : null);
                         video.setTrailerUrl(item.get("trailerUrl") != null ? item.get("trailerUrl").s() : null);
+                        
+                        // Map job tracking fields
+                        video.setVideoJobId(item.get("videoJobId") != null ? item.get("videoJobId").s() : null);
+                        video.setVideoJobStatus(item.get("videoJobStatus") != null ? item.get("videoJobStatus").s() : null);
+                        video.setTrailerJobId(item.get("trailerJobId") != null ? item.get("trailerJobId").s() : null);
+                        video.setTrailerJobStatus(item.get("trailerJobStatus") != null ? item.get("trailerJobStatus").s() : null);
+                        
                         return video;
                     })
                     .collect(Collectors.toList());
@@ -114,7 +125,7 @@ public class VideoService {
             String title = extractTitle(metadata, objectKey);
 
             // Build access link using CloudFront URL pattern
-            String accessLink = buildAccessLink(objectKey);
+            String videoUrl = buildAccessLink(objectKey);
 
             // Extract folder path and determine type/category
             String folderPath = extractFolderPath(objectKey);
@@ -129,7 +140,7 @@ public class VideoService {
                     .type(type)
                     .category(category)
                     .folderPath(folderPath)
-                    .accessLink(accessLink)
+                    .videoUrl(videoUrl)
                     .s3Key(objectKey)
                     .createdAt(now)
                     .modifiedAt(now)
@@ -254,7 +265,7 @@ public class VideoService {
                 if (!doesS3ObjectExist(mainVideoKey)) {
                     throw new VideoProcessingException("Updated main video file not found in S3: " + mainVideoKey);
                 }
-                existingVideo.setAccessLink(buildAccessLink(mainVideoKey));
+                existingVideo.setVideoUrl(buildAccessLink(mainVideoKey));
                 existingVideo.setS3Key(mainVideoKey);
             }
 
@@ -323,6 +334,22 @@ public class VideoService {
                 }
             }
 
+            // Delete from transcoded S3 bucket if video has been transcoded
+            if (isVideoTranscoded(video) && video.getFolderPath() != null && !video.getFolderPath().isEmpty() &&
+                    transcodedBucketName != null && !transcodedBucketName.isEmpty()) {
+
+                try {
+                    // Delete transcoded files (HLS segments, .m3u8 files, etc.)
+                    String folderPrefix = video.getFolderPath() + "/";
+                    deleteS3FolderRecursively(folderPrefix, transcodedBucketName);
+                    log.info("Successfully deleted transcoded files from S3: {}", video.getFolderPath());
+
+                } catch (Exception s3e) {
+                    log.warn("Failed to delete transcoded S3 folder: {}", video.getFolderPath(), s3e);
+                    // Continue with DynamoDB deletion even if transcoded S3 deletion fails
+                }
+            }
+
             // Delete from DynamoDB
             videoRepository.deleteById(videoId);
             log.info("Successfully deleted video from DynamoDB: videoId={}", videoId);
@@ -336,6 +363,22 @@ public class VideoService {
     public Video getVideoById(String videoId) {
         return videoRepository.findById(videoId)
                 .orElseThrow(() -> new VideoNotFoundException("Video not found with id: " + videoId));
+    }
+
+    /**
+     * Check if a video has been transcoded by examining if the URLs point to transcoded content
+     */
+    private boolean isVideoTranscoded(Video video) {
+        // Check if videoUrl or trailerUrl contain transcoded bucket or .m3u8 files
+        boolean videoTranscoded = video.getVideoUrl() != null && 
+            (video.getVideoUrl().contains(".m3u8") || 
+             (transcodedBucketName != null && video.getVideoUrl().contains(transcodedBucketName)));
+        
+        boolean trailerTranscoded = video.getTrailerUrl() != null && 
+            (video.getTrailerUrl().contains(".m3u8") || 
+             (transcodedBucketName != null && video.getTrailerUrl().contains(transcodedBucketName)));
+        
+        return videoTranscoded || trailerTranscoded;
     }
 
     // Helper methods
@@ -513,7 +556,7 @@ public class VideoService {
                 if (!doesS3ObjectExist(mainVideoKey)) {
                     throw new VideoProcessingException("Main video file not found in S3: " + mainVideoKey);
                 }
-                existingVideo.setAccessLink(buildAccessLink(mainVideoKey));
+                existingVideo.setVideoUrl(buildAccessLink(mainVideoKey));
                 existingVideo.setS3Key(mainVideoKey);
             }
 
@@ -646,6 +689,50 @@ public class VideoService {
     }
 
     /**
+     * Delete entire S3 folder recursively from specified bucket
+     */
+    private void deleteS3FolderRecursively(String folderPrefix, String bucketName) {
+        try {
+            // List all objects with the folder prefix
+            ListObjectsV2Request listRequest = ListObjectsV2Request.builder()
+                    .bucket(bucketName)
+                    .prefix(folderPrefix)
+                    .build();
+
+            ListObjectsV2Response listResponse = s3Client.listObjectsV2(listRequest);
+
+            if (listResponse.contents().isEmpty()) {
+                log.info("No objects found in folder: {} in bucket: {}", folderPrefix, bucketName);
+                return;
+            }
+
+            // Delete all objects in batch
+            List<ObjectIdentifier> objectsToDelete = listResponse.contents().stream()
+                    .map(s3Object -> ObjectIdentifier.builder().key(s3Object.key()).build())
+                    .collect(Collectors.toList());
+
+            if (!objectsToDelete.isEmpty()) {
+                Delete delete = Delete.builder()
+                        .objects(objectsToDelete)
+                        .build();
+
+                DeleteObjectsRequest deleteRequest = DeleteObjectsRequest.builder()
+                        .bucket(bucketName)
+                        .delete(delete)
+                        .build();
+
+                DeleteObjectsResponse deleteResponse = s3Client.deleteObjects(deleteRequest);
+                log.info("Deleted {} objects from folder: {} in bucket: {}", 
+                        deleteResponse.deleted().size(), folderPrefix, bucketName);
+            }
+
+        } catch (Exception e) {
+            log.error("Error deleting S3 folder recursively from bucket {}: {}", bucketName, folderPrefix, e);
+            throw new S3OperationException("Failed to delete S3 folder recursively from bucket " + bucketName + ": " + e.getMessage(), e);
+        }
+    }
+
+    /**
      * Extract parent folder path from full folder path
      * Example: tv/breaking-bad/season-1/uuid -> tv/breaking-bad/season-1
      */
@@ -708,5 +795,256 @@ public class VideoService {
             log.warn("Error checking if S3 folder is empty: {}", folderPrefix, e);
             return false; // Assume not empty if we can't check
         }
+    }
+
+    /**
+     * Updates video job status when MediaConvert job starts.
+     * 
+     * @param objectKey the S3 object key
+     * @param jobId the MediaConvert job ID
+     * @param status the job status
+     * @param isTrailer whether this is a trailer
+     */
+    public void updateVideoJobStatus(String objectKey, String jobId, String status, boolean isTrailer) {
+        try {
+            // Find video by S3 key or create a new entry
+            String videoId = extractVideoIdFromObjectKey(objectKey);
+            Video video = videoRepository.findById(videoId).orElse(null);
+            
+            if (video == null) {
+                // Create a new video entry if it doesn't exist
+                video = Video.builder()
+                    .videoId(videoId)
+                    .title(extractTitleFromObjectKey(objectKey))
+                    .type("video")
+                    .category("movie") // Default category
+                    .folderPath(extractFolderPathFromObjectKey(objectKey))
+                    .videoUrl("")
+                    .s3Key(objectKey)
+                    .createdAt(Instant.now().toString())
+                    .build();
+            }
+            
+            // Update job tracking fields
+            if (isTrailer) {
+                video.setTrailerJobId(jobId);
+                video.setTrailerJobStatus(status);
+            } else {
+                video.setVideoJobId(jobId);
+                video.setVideoJobStatus(status);
+            }
+            
+            video.setModifiedAt(Instant.now().toString());
+            videoRepository.save(video);
+            
+            log.info("Updated video job status: videoId={}, jobId={}, status={}, isTrailer={}", 
+                    videoId, jobId, status, isTrailer);
+                    
+        } catch (Exception e) {
+            log.error("Failed to update video job status: objectKey={}, jobId={}", objectKey, jobId, e);
+            throw new VideoProcessingException("Failed to update video job status", e);
+        }
+    }
+
+    /**
+     * Updates video URLs when MediaConvert job completes successfully.
+     * 
+     * @param jobId the MediaConvert job ID
+     * @param m3u8Url the HLS playlist URL
+     * @param isTrailer whether this is a trailer
+     * @param sourceKey the original source key
+     */
+    public void updateVideoJobComplete(String jobId, String m3u8Url, boolean isTrailer, String sourceKey) {
+        try {
+            // Find video by job ID
+            Video video = findVideoByJobId(jobId, isTrailer);
+            
+            if (video == null) {
+                log.warn("Video not found for job ID: {}, isTrailer: {}", jobId, isTrailer);
+                return;
+            }
+            
+            // Update URLs and status
+            if (isTrailer) {
+                video.setTrailerUrl(m3u8Url);
+                video.setTrailerJobStatus("Completed");
+            } else {
+                video.setVideoUrl(m3u8Url);
+                video.setVideoJobStatus("Completed");
+            }
+            
+            video.setModifiedAt(Instant.now().toString());
+            videoRepository.save(video);
+            
+            log.info("Updated video job completion: videoId={}, jobId={}, m3u8Url={}, isTrailer={}", 
+                    video.getVideoId(), jobId, m3u8Url, isTrailer);
+                    
+        } catch (Exception e) {
+            log.error("Failed to update video job completion: jobId={}, isTrailer={}", jobId, isTrailer, e);
+            throw new VideoProcessingException("Failed to update video job completion", e);
+        }
+    }
+
+    /**
+     * Updates video job status when MediaConvert job fails.
+     * 
+     * @param jobId the MediaConvert job ID
+     * @param errorMessage the error message
+     * @param isTrailer whether this is a trailer
+     * @param sourceKey the original source key
+     */
+    public void updateVideoJobError(String jobId, String errorMessage, boolean isTrailer, String sourceKey) {
+        try {
+            // Find video by job ID
+            Video video = findVideoByJobId(jobId, isTrailer);
+            
+            if (video == null) {
+                log.warn("Video not found for job ID: {}, isTrailer: {}", jobId, isTrailer);
+                return;
+            }
+            
+            // Update status to failed
+            if (isTrailer) {
+                video.setTrailerJobStatus("Failed: " + errorMessage);
+            } else {
+                video.setVideoJobStatus("Failed: " + errorMessage);
+            }
+            
+            video.setModifiedAt(Instant.now().toString());
+            videoRepository.save(video);
+            
+            log.info("Updated video job error: videoId={}, jobId={}, error={}, isTrailer={}", 
+                    video.getVideoId(), jobId, errorMessage, isTrailer);
+                    
+        } catch (Exception e) {
+            log.error("Failed to update video job error: jobId={}, isTrailer={}", jobId, isTrailer, e);
+            throw new VideoProcessingException("Failed to update video job error", e);
+        }
+    }
+
+    /**
+     * Finds a video by MediaConvert job ID.
+     * 
+     * @param jobId the job ID
+     * @param isTrailer whether this is a trailer job
+     * @return the video or null if not found
+     */
+    private Video findVideoByJobId(String jobId, boolean isTrailer) {
+        try {
+            // Scan the table to find video with matching job ID
+            // Note: In production, consider using a GSI for job ID lookups
+            ScanRequest scanRequest = ScanRequest.builder()
+                .tableName(videosTableName)
+                .filterExpression(isTrailer ? "trailerJobId = :jobId" : "videoJobId = :jobId")
+                .expressionAttributeValues(Map.of(":jobId", 
+                    software.amazon.awssdk.services.dynamodb.model.AttributeValue.builder()
+                        .s(jobId)
+                        .build()))
+                .build();
+
+            ScanResponse response = dynamoDbClient.scan(scanRequest);
+            
+            if (response.items().isEmpty()) {
+                return null;
+            }
+
+            // Convert first item to Video object
+            Map<String, software.amazon.awssdk.services.dynamodb.model.AttributeValue> item = response.items().get(0);
+            String videoId = item.get("videoId").s();
+            return videoRepository.findById(videoId).orElse(null);
+            
+        } catch (Exception e) {
+            log.error("Failed to find video by job ID: {}, isTrailer: {}", jobId, isTrailer, e);
+            return null;
+        }
+    }
+
+    /**
+     * Extracts video ID from S3 object key.
+     * The video ID is the folder name that contains the video files.
+     * 
+     * @param objectKey the S3 object key (e.g., "movie/test-movies/automated-test/e05f9ee0-177f-42f0-8cfd-08a36d7269c3/main.mp4")
+     * @return the video ID (e.g., "e05f9ee0-177f-42f0-8cfd-08a36d7269c3")
+     */
+    private String extractVideoIdFromObjectKey(String objectKey) {
+        // Extract the video ID from the path structure: category/folderPath/videoId/filename
+        String[] pathParts = objectKey.split("/");
+        if (pathParts.length >= 2) {
+            // The video ID is the second-to-last part of the path (the folder containing the files)
+            return pathParts[pathParts.length - 2];
+        }
+        
+        // Fallback: Extract the filename without extension to use as video ID
+        String fileName = objectKey.substring(objectKey.lastIndexOf('/') + 1);
+        if (fileName.contains(".")) {
+            fileName = fileName.substring(0, fileName.lastIndexOf('.'));
+        }
+        // Remove 'trailer' suffix if present to get the base ID
+        if (fileName.toLowerCase().endsWith("_trailer") || fileName.toLowerCase().endsWith("-trailer")) {
+            fileName = fileName.substring(0, fileName.lastIndexOf('_') > 0 ? fileName.lastIndexOf('_') : fileName.lastIndexOf('-'));
+        }
+        return fileName;
+    }
+
+    /**
+     * Extracts title from S3 object key.
+     * 
+     * @param objectKey the S3 object key
+     * @return the title
+     */
+    private String extractTitleFromObjectKey(String objectKey) {
+        String fileName = objectKey.substring(objectKey.lastIndexOf('/') + 1);
+        if (fileName.contains(".")) {
+            fileName = fileName.substring(0, fileName.lastIndexOf('.'));
+        }
+        // Convert underscores and hyphens to spaces and capitalize
+        return fileName.replaceAll("[_-]", " ").trim();
+    }
+
+    /**
+     * Extracts folder path from S3 object key.
+     * 
+     * @param objectKey the S3 object key
+     * @return the folder path
+     */
+    private String extractFolderPathFromObjectKey(String objectKey) {
+        int lastSlashIndex = objectKey.lastIndexOf('/');
+        return lastSlashIndex > 0 ? objectKey.substring(0, lastSlashIndex) : "";
+    }
+
+    /**
+     * Converts a Video entity to VideoDetailResponse with structured process information.
+     * 
+     * @param video the video entity to convert
+     * @return VideoDetailResponse with process array
+     */
+    public VideoDetailResponse convertToDetailResponse(Video video) {
+        List<VideoDetailResponse.ProcessInfo> processes = List.of(
+            VideoDetailResponse.ProcessInfo.builder()
+                .mediaType("video")
+                .jobId(video.getVideoJobId())
+                .jobStatus(video.getVideoJobStatus())
+                .build(),
+            VideoDetailResponse.ProcessInfo.builder()
+                .mediaType("trailer")
+                .jobId(video.getTrailerJobId())
+                .jobStatus(video.getTrailerJobStatus())
+                .build()
+        );
+
+        return VideoDetailResponse.builder()
+            .videoId(video.getVideoId())
+            .title(video.getTitle())
+            .type(video.getType())
+            .category(video.getCategory())
+            .folderPath(video.getFolderPath())
+            .createdAt(video.getCreatedAt())
+            .modifiedAt(video.getModifiedAt())
+            .s3Key(video.getS3Key())
+            .posterUrl(video.getPosterUrl())
+            .trailerUrl(video.getTrailerUrl())
+            .videoUrl(video.getVideoUrl())
+            .process(processes)
+            .build();
     }
 }

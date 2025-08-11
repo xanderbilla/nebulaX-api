@@ -92,6 +92,11 @@
 			<artifactId>dynamodb-enhanced</artifactId>
 			<version>2.21.29</version>
 		</dependency>
+		<dependency>
+			<groupId>software.amazon.awssdk</groupId>
+			<artifactId>mediaconvert</artifactId>
+			<version>2.21.29</version>
+		</dependency>
 	</dependencies>
 
 	<build>

@@ -7,6 +7,7 @@ import com.example.demo.dto.request.InitiateFileUpdateRequest;
 import com.example.demo.dto.request.CompleteUploadRequest;
 import com.example.demo.dto.request.CompleteFileUpdateRequest;
 import com.example.demo.dto.response.InitiateUploadResponse;
+import com.example.demo.dto.response.VideoDetailResponse;
 import com.example.demo.model.Video;
 import com.example.demo.service.VideoService;
 import lombok.RequiredArgsConstructor;
@@ -64,23 +65,24 @@ public class VideoController {
      * Retrieves a specific video by its ID.
      * 
      * @param videoId The unique identifier of the video
-     * @return ResponseEntity containing the requested video
+     * @return ResponseEntity containing the requested video with process information
      */
     @GetMapping("/{videoId}")
-    public ResponseEntity<ApiResponse<Video>> getVideo(@PathVariable String videoId) {
+    public ResponseEntity<ApiResponse<VideoDetailResponse>> getVideo(@PathVariable String videoId) {
         log.info("Fetching video with ID: {}", videoId);
 
         try {
             Video video = videoService.getVideoById(videoId);
+            VideoDetailResponse detailResponse = videoService.convertToDetailResponse(video);
 
-            ApiResponse<Video> response = ApiResponse.success("Video retrieved successfully", video);
+            ApiResponse<VideoDetailResponse> response = ApiResponse.success("Video retrieved successfully", detailResponse);
 
             return ResponseEntity.ok(response);
 
         } catch (RuntimeException e) {
             log.error("Error fetching video with ID: {}", videoId, e);
 
-            ApiResponse<Video> errorResponse = ApiResponse.error(e.getMessage(), HttpStatus.NOT_FOUND.value());
+            ApiResponse<VideoDetailResponse> errorResponse = ApiResponse.error(e.getMessage(), HttpStatus.NOT_FOUND.value());
 
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(errorResponse);
         }

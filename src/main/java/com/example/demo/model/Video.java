@@ -48,9 +48,6 @@ public class Video {
     @NotBlank(message = "Folder path cannot be blank")
     private String folderPath;
 
-    @NotBlank(message = "Access link cannot be blank")
-    private String accessLink;
-
     @NotNull(message = "Created date cannot be null")
     private String createdAt;
 
@@ -61,9 +58,49 @@ public class Video {
 
     private String posterUrl;
     private String trailerUrl;
+    private String videoUrl;
+    
+    // Job tracking fields
+    private String videoJobId;
+    private String videoJobStatus;
+    private String trailerJobId;
+    private String trailerJobStatus;
 
     @DynamoDbPartitionKey
     public String getVideoId() {
         return videoId;
+    }
+    
+    // Job tracking getter/setter methods
+    public String getVideoJobId() {
+        return videoJobId;
+    }
+    
+    public void setVideoJobId(String videoJobId) {
+        this.videoJobId = videoJobId;
+    }
+    
+    public String getVideoJobStatus() {
+        return videoJobStatus;
+    }
+    
+    public void setVideoJobStatus(String videoJobStatus) {
+        this.videoJobStatus = videoJobStatus;
+    }
+    
+    public String getTrailerJobId() {
+        return trailerJobId;
+    }
+    
+    public void setTrailerJobId(String trailerJobId) {
+        this.trailerJobId = trailerJobId;
+    }
+    
+    public String getTrailerJobStatus() {
+        return trailerJobStatus;
+    }
+    
+    public void setTrailerJobStatus(String trailerJobStatus) {
+        this.trailerJobStatus = trailerJobStatus;
     }
 }

@@ -4,7 +4,7 @@ import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.RequestHandler;
 import com.amazonaws.services.lambda.runtime.events.S3Event;
 import com.amazonaws.services.lambda.runtime.events.models.s3.S3EventNotification;
-import com.example.demo.model.Video;
+import com.example.demo.service.MediaConvertService;
 import com.example.demo.service.VideoService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,20 +16,20 @@ import java.util.List;
 
 /**
  * AWS Lambda handler for processing S3 video upload events automatically.
- * Triggers video processing workflows when video files are uploaded to S3 bucket.
- * Supports multiple video formats and provides automatic metadata extraction.
+ * Triggers MediaConvert transcoding workflows when video files are uploaded to S3 bucket.
+ * Supports multiple video formats and provides automatic transcoding to HLS format.
  * 
  * @author Xander Billa
- * @since August 3, 2025
- * @see com.example.demo.service.VideoService
+ * @since August 11, 2025
+ * @see com.example.demo.service.MediaConvertService
  * @see com.amazonaws.services.lambda.runtime.events.S3Event
- * @see com.example.demo.model.Video
  */
 public class S3VideoProcessorHandler implements RequestHandler<S3Event, String> {
 
     private static final Logger logger = LoggerFactory.getLogger(S3VideoProcessorHandler.class);
 
     private static ConfigurableApplicationContext applicationContext;
+    private static MediaConvertService mediaConvertService;
     private static VideoService videoService;
 
     // Supported video file extensions
@@ -41,6 +41,7 @@ public class S3VideoProcessorHandler implements RequestHandler<S3Event, String> 
             // Initialize Spring Boot application context
             System.setProperty("spring.profiles.active", "lambda");
             applicationContext = SpringApplication.run(com.example.demo.DemoApplication.class);
+            // Don't initialize MediaConvertService here - it's @Lazy
             videoService = applicationContext.getBean(VideoService.class);
             logger.info("Spring Boot application context initialized successfully");
         } catch (Exception e) {
@@ -81,10 +82,24 @@ public class S3VideoProcessorHandler implements RequestHandler<S3Event, String> 
                 }
 
                 try {
-                    // Process the video upload
-                    Video video = videoService.processVideoUpload(bucketName, objectKey);
-                    logger.info("Successfully processed video: videoId={}, title={}",
-                            video.getVideoId(), video.getTitle());
+                    // Get MediaConvertService lazily when actually needed
+                    if (mediaConvertService == null) {
+                        mediaConvertService = applicationContext.getBean(MediaConvertService.class);
+                    }
+                    
+                    // Determine if this is a video or trailer based on the path/filename
+                    boolean isTrailer = objectKey.toLowerCase().contains("trailer");
+                    
+                    // Start MediaConvert transcoding job
+                    String jobId = mediaConvertService.createTranscodingJob(bucketName, objectKey, isTrailer);
+                    logger.info("Successfully started MediaConvert job: jobId={}, objectKey={}, isTrailer={}", 
+                            jobId, objectKey, isTrailer);
+
+                    // Update DynamoDB with job tracking information
+                    videoService.updateVideoJobStatus(objectKey, jobId, "In Progress", isTrailer);
+                    logger.info("Updated video job status: objectKey={}, jobId={}, status=In Progress", 
+                            objectKey, jobId);
+
                     processedCount++;
 
                 } catch (Exception e) {

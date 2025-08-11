@@ -32,6 +32,237 @@ print_error() { echo -e "${RED}❌ $1${NC}"; }
 print_header() { echo -e "\n${BOLD}${BLUE}🚀 $1${NC}\n"; }
 print_step() { echo -e "${BOLD}📋 $1${NC}"; }
 
+# Function to monitor real-time CloudFormation events
+monitor_stack_events() {
+    local stack_name="$1"
+    local operation_type="$2"  # CREATE, UPDATE, DELETE
+    local wait_start=$(date +%s)
+    local last_event_time=""
+    local event_count=0
+    local last_status_update=0
+    
+    print_header "Real-time CloudFormation Events Monitor"
+    print_info "🎯 Stack: $stack_name"
+    print_info "🔄 Operation: $operation_type"
+    print_info "📍 Region: $REGION"
+    print_info "⏱️  Updates every 5 seconds"
+    echo ""
+    
+    # Get the current latest event timestamp as baseline to filter new events
+    local baseline_events=$(aws cloudformation describe-stack-events \
+        --stack-name "$stack_name" \
+        --region "$REGION" \
+        --query 'StackEvents[0].Timestamp' \
+        --output text 2>/dev/null || echo "")
+    
+    # Convert baseline timestamp to epoch for comparison
+    local baseline_timestamp=0
+    if [ -n "$baseline_events" ] && [ "$baseline_events" != "None" ]; then
+        baseline_timestamp=$(date -d "$baseline_events" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%S" "${baseline_events%.*}" +%s 2>/dev/null || echo "$wait_start")
+    else
+        baseline_timestamp=$wait_start
+    fi
+    
+    print_info "🕐 Monitoring events newer than: $(date -d "@$baseline_timestamp" 2>/dev/null || date -r "$baseline_timestamp" 2>/dev/null || echo "now")"
+    echo ""
+    
+    # Create a temporary file to track seen events
+    local seen_events_file="/tmp/cf_events_${stack_name}_$$"
+    touch "$seen_events_file"
+    
+    while true; do
+        # Get current stack status
+        local stack_status=$(aws cloudformation describe-stacks \
+            --stack-name "$stack_name" \
+            --region "$REGION" \
+            --query 'Stacks[0].StackStatus' \
+            --output text 2>/dev/null || echo "STACK_NOT_FOUND")
+        
+        # Get recent events (last 20 events, sorted by timestamp)
+        local events=$(aws cloudformation describe-stack-events \
+            --stack-name "$stack_name" \
+            --region "$REGION" \
+            --query 'StackEvents[:20].{Time:Timestamp,Resource:LogicalResourceId,Type:ResourceType,Status:ResourceStatus,Reason:ResourceStatusReason}' \
+            --output json 2>/dev/null)
+        
+        if [ -n "$events" ] && [ "$events" != "null" ] && [ "$events" != "[]" ]; then
+            # Process each event - only show events newer than baseline
+            echo "$events" | jq -r '.[] | "\(.Time)|\(.Resource)|\(.Type)|\(.Status)|\(.Reason // "")"' | while IFS='|' read -r event_time resource_id resource_type status reason; do
+                # Convert event timestamp to epoch for comparison
+                local event_timestamp=$(date -d "$event_time" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%S" "${event_time%.*}" +%s 2>/dev/null || echo "0")
+                
+                # Only process events that occurred after baseline (i.e., new events during this operation)
+                if [ "$event_timestamp" -le "$baseline_timestamp" ]; then
+                    continue
+                fi
+                
+                local event_id="${event_time}_${resource_id}_${status}"
+                
+                # Check if we've already seen this event
+                if ! grep -q "$event_id" "$seen_events_file" 2>/dev/null; then
+                    echo "$event_id" >> "$seen_events_file"
+                    
+                    # Format timestamp
+                    local formatted_time=$(date -d "$event_time" "+%H:%M:%S" 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%S" "${event_time%.*}" "+%H:%M:%S" 2>/dev/null || echo "${event_time%.*}")
+                    
+                    # Choose emoji and color based on status
+                    local status_emoji=""
+                    local status_color=""
+                    case "$status" in
+                        *_COMPLETE)
+                            status_emoji="✅"
+                            status_color="${GREEN}"
+                            ;;
+                        *_IN_PROGRESS)
+                            status_emoji="🔄"
+                            status_color="${CYAN}"
+                            ;;
+                        *_FAILED)
+                            status_emoji="❌"
+                            status_color="${RED}"
+                            ;;
+                        CREATE_COMPLETE)
+                            status_emoji="🎉"
+                            status_color="${GREEN}"
+                            ;;
+                        DELETE_COMPLETE)
+                            status_emoji="🗑️"
+                            status_color="${GREEN}"
+                            ;;
+                        *)
+                            status_emoji="📋"
+                            status_color="${YELLOW}"
+                            ;;
+                    esac
+                    
+                    # Display the event with enhanced description
+                    local description=""
+                    case "$status" in
+                        "CREATE_IN_PROGRESS")
+                            description="Creating resource..."
+                            ;;
+                        "CREATE_COMPLETE")
+                            description="Resource created successfully"
+                            ;;
+                        "DELETE_IN_PROGRESS")
+                            description="Deleting resource..."
+                            ;;
+                        "DELETE_COMPLETE")
+                            description="Resource deleted successfully"
+                            ;;
+                        "UPDATE_IN_PROGRESS")
+                            description="Updating resource..."
+                            ;;
+                        "UPDATE_COMPLETE")
+                            description="Resource updated successfully"
+                            ;;
+                        *"_FAILED")
+                            description="Operation failed!"
+                            ;;
+                        *)
+                            description="$status"
+                            ;;
+                    esac
+                    
+                    printf "${status_color}${status_emoji} [%s] %-25s %-20s %s${NC}\n" \
+                        "$formatted_time" \
+                        "${resource_id:0:25}" \
+                        "$description" \
+                        "${resource_type}"
+                    
+                    # Show reason for failed events
+                    if [[ "$status" == *"_FAILED"* ]] && [ -n "$reason" ]; then
+                        printf "   ${RED}💬 %s${NC}\n" "$reason"
+                    fi
+                    
+                    ((event_count++))
+                fi
+            done
+        fi
+        
+        # Check if operation is complete
+        case "$stack_status" in
+            CREATE_COMPLETE|UPDATE_COMPLETE|DELETE_COMPLETE)
+                local elapsed=$(($(date +%s) - wait_start))
+                local elapsed_min=$((elapsed / 60))
+                local elapsed_sec=$((elapsed % 60))
+                
+                echo ""
+                print_success "🎉 Stack operation completed successfully!"
+                echo -e "  ${BOLD}Final Status:${NC} ${GREEN}$stack_status${NC}"
+                echo -e "  ${BOLD}Duration:${NC} ${elapsed_min}m ${elapsed_sec}s"
+                echo -e "  ${BOLD}Events Processed:${NC} $event_count"
+                echo -e "  ${BOLD}Completion Time:${NC} $(date)"
+                
+                # Cleanup
+                rm -f "$seen_events_file"
+                return 0
+                ;;
+            CREATE_FAILED|UPDATE_FAILED|ROLLBACK_COMPLETE|UPDATE_ROLLBACK_COMPLETE|DELETE_FAILED)
+                local elapsed=$(($(date +%s) - wait_start))
+                local elapsed_min=$((elapsed / 60))
+                local elapsed_sec=$((elapsed % 60))
+                
+                echo ""
+                print_error "❌ Stack operation failed!"
+                echo -e "  ${BOLD}Final Status:${NC} ${RED}$stack_status${NC}"
+                echo -e "  ${BOLD}Duration:${NC} ${elapsed_min}m ${elapsed_sec}s"
+                echo -e "  ${BOLD}Events Processed:${NC} $event_count"
+                
+                # Show recent failure events in detail
+                echo ""
+                print_error "🔍 Failure Analysis:"
+                aws cloudformation describe-stack-events \
+                    --stack-name "$stack_name" \
+                    --region "$REGION" \
+                    --query 'StackEvents[?ResourceStatus==`CREATE_FAILED` || ResourceStatus==`UPDATE_FAILED` || ResourceStatus==`DELETE_FAILED`].{Time:Timestamp,Resource:LogicalResourceId,Type:ResourceType,Status:ResourceStatus,Reason:ResourceStatusReason}' \
+                    --output table 2>/dev/null || print_error "Could not retrieve detailed failure events"
+                
+                # Cleanup
+                rm -f "$seen_events_file"
+                return 1
+                ;;
+            STACK_NOT_FOUND)
+                if [[ "$operation_type" == "DELETE" ]]; then
+                    local elapsed=$(($(date +%s) - wait_start))
+                    local elapsed_min=$((elapsed / 60))
+                    local elapsed_sec=$((elapsed % 60))
+                    
+                    echo ""
+                    print_success "🎉 Stack successfully deleted!"
+                    echo -e "  ${BOLD}Duration:${NC} ${elapsed_min}m ${elapsed_sec}s"
+                    echo -e "  ${BOLD}Events Processed:${NC} $event_count"
+                    
+                    # Cleanup
+                    rm -f "$seen_events_file"
+                    return 0
+                else
+                    print_error "❌ Stack not found during $operation_type operation"
+                    rm -f "$seen_events_file"
+                    return 1
+                fi
+                ;;
+            *)
+                # Show periodic status updates every 30 seconds
+                local current_time=$(date +%s)
+                if [ $((current_time - last_status_update)) -ge 30 ]; then
+                    local elapsed=$((current_time - wait_start))
+                    local elapsed_min=$((elapsed / 60))
+                    local elapsed_sec=$((elapsed % 60))
+                    
+                    echo ""
+                    print_info "📊 Status Update: $stack_status | Duration: ${elapsed_min}m ${elapsed_sec}s | Events: $event_count"
+                    echo ""
+                    last_status_update=$current_time
+                fi
+                
+                # Continue monitoring - check every 5 seconds for new events
+                sleep 5
+                ;;
+        esac
+    done
+}
+
 # Loading spinner function
 show_spinner() {
     local pid=$1
@@ -755,94 +986,16 @@ deploy_application() {
         fi
     fi
     
-    # Monitor stack operation progress with enhanced status reporting
-    print_step "Monitoring Stack Operation Progress"
-    
-    local operation_status=""
-    local spinner="/-\|"
-    local i=0
-    local status_count=0
-    local last_status=""
-    
-    # Enhanced progress tracking
-    while true; do
-        operation_status=$(aws cloudformation describe-stacks \
-            --stack-name "$STACK_NAME" \
-            --region "$REGION" \
-            --query 'Stacks[0].StackStatus' \
-            --output text 2>/dev/null || echo "UNKNOWN")
-        
-        # Show status change notifications
-        if [ "$operation_status" != "$last_status" ] && [ -n "$last_status" ]; then
-            printf "\n${BLUE}📍 Status changed: ${last_status} → ${operation_status}${NC}\n"
-        fi
-        last_status="$operation_status"
-        
-        case "$operation_status" in
-            CREATE_COMPLETE|UPDATE_COMPLETE)
-                printf "\r${GREEN}✅ Stack operation completed successfully${NC}\n"
-                
-                # Show completion summary
-                echo ""
-                print_success "🎉 CloudFormation Stack Operation Summary:"
-                echo -e "  ${BOLD}Stack Name:${NC} $STACK_NAME"
-                echo -e "  ${BOLD}Region:${NC} $REGION"
-                echo -e "  ${BOLD}Final Status:${NC} ${GREEN}$operation_status${NC}"
-                echo -e "  ${BOLD}Completion Time:${NC} $(date)"
-                break
-                ;;
-            CREATE_FAILED|UPDATE_FAILED|ROLLBACK_COMPLETE|UPDATE_ROLLBACK_COMPLETE)
-                printf "\r${RED}❌ Stack operation failed${NC}\n"
-                
-                # Get stack events for failure details
-                print_error "CloudFormation operation failed with status: $operation_status"
-                print_info "Recent stack events:"
-                aws cloudformation describe-stack-events \
-                    --stack-name "$STACK_NAME" \
-                    --region "$REGION" \
-                    --query 'StackEvents[0:5].[Timestamp,LogicalResourceId,ResourceStatus,ResourceStatusReason]' \
-                    --output table 2>/dev/null || echo "Could not retrieve stack events"
-                exit 1
-                ;;
-            CREATE_IN_PROGRESS)
-                printf "\r${CYAN}${spinner:$i:1} Creating stack resources... (${operation_status})${NC}"
-                i=$(((i+1) % 4))
-                status_count=$((status_count + 1))
-                
-                # Show periodic progress updates for long operations
-                if [ $((status_count % 30)) -eq 0 ]; then
-                    printf "\n${BLUE}📊 Still creating... (${status_count} checks completed)${NC}\n"
-                fi
-                sleep 2
-                ;;
-            UPDATE_IN_PROGRESS)
-                printf "\r${CYAN}${spinner:$i:1} Updating stack resources... (${operation_status})${NC}"
-                i=$(((i+1) % 4))
-                status_count=$((status_count + 1))
-                
-                # Show periodic progress updates for long operations
-                if [ $((status_count % 30)) -eq 0 ]; then
-                    printf "\n${BLUE}📊 Still updating... (${status_count} checks completed)${NC}\n"
-                fi
-                sleep 2
-                ;;
-            UPDATE_ROLLBACK_IN_PROGRESS)
-                printf "\r${YELLOW}${spinner:$i:1} Rolling back changes... (${operation_status})${NC}"
-                i=$(((i+1) % 4))
-                sleep 2
-                ;;
-            *)
-                printf "\r${YELLOW}${spinner:$i:1} Waiting for stack operation... (${operation_status})${NC}"
-                i=$(((i+1) % 4))
-                sleep 2
-                ;;
-        esac
-    done
+    # Monitor stack operation with real-time events
+    if [ "$stack_exists" = true ]; then
+        monitor_stack_events "$STACK_NAME" "UPDATE"
+    else
+        monitor_stack_events "$STACK_NAME" "CREATE"
+    fi
     
     print_success "Deployment completed successfully"
 }
 
-# Function to get outputs and test
 test_deployment() {
     print_step "Testing Deployment"
     
@@ -912,6 +1065,115 @@ test_deployment() {
     echo ""
     print_info "Test your API:"
     echo -e "  ${BOLD}curl $HEALTH_URL${NC}"
+}
+
+# Function to configure S3 notifications for MediaConvert triggers
+configure_s3_notifications() {
+    print_step "Configuring S3 Event Notifications"
+    
+    # Get resource names from CloudFormation outputs
+    local s3_bucket=$(aws cloudformation describe-stacks \
+        --stack-name "$STACK_NAME" \
+        --region "$REGION" \
+        --query 'Stacks[0].Outputs[?OutputKey==`VideosBucketName`].OutputValue' \
+        --output text 2>/dev/null || echo "")
+    
+    local s3_processor_function=$(aws cloudformation describe-stacks \
+        --stack-name "$STACK_NAME" \
+        --region "$REGION" \
+        --query 'Stacks[0].Outputs[?OutputKey==`S3VideoProcessorFunctionName`].OutputValue' \
+        --output text 2>/dev/null || echo "")
+    
+    if [[ -z "$s3_bucket" ]] || [[ -z "$s3_processor_function" ]]; then
+        print_warning "Could not retrieve S3 bucket or Lambda function from CloudFormation outputs"
+        print_info "Attempting to use default naming convention..."
+        s3_bucket="${STACK_NAME}-s3-$(aws sts get-caller-identity --query Account --output text)"
+        s3_processor_function="${STACK_NAME}-s3-processor"
+    fi
+    
+    print_info "S3 Bucket: $s3_bucket"
+    print_info "Lambda Function: $s3_processor_function"
+    
+    # Check if S3 notification already exists
+    print_info "Checking existing S3 notifications..."
+    local existing_notifications=$(aws s3api get-bucket-notification-configuration \
+        --bucket "$s3_bucket" \
+        --region "$REGION" 2>/dev/null || echo "{}")
+    
+    if echo "$existing_notifications" | jq -e '.LambdaFunctionConfigurations[]? | select(.Events[]? == "s3:ObjectCreated:*")' > /dev/null 2>&1; then
+        print_success "S3 notification already configured"
+        return 0
+    fi
+    
+    # Get Lambda function ARN
+    local lambda_arn=$(aws lambda get-function \
+        --function-name "$s3_processor_function" \
+        --region "$REGION" \
+        --query 'Configuration.FunctionArn' \
+        --output text 2>/dev/null || echo "")
+    
+    if [[ -z "$lambda_arn" ]]; then
+        print_error "Could not find Lambda function: $s3_processor_function"
+        return 1
+    fi
+    
+    print_info "Lambda ARN: $lambda_arn"
+    
+    # Add Lambda permission for S3 to invoke the function (if not already exists)
+    print_info "Adding Lambda permission for S3 invocation..."
+    if aws lambda add-permission \
+        --function-name "$s3_processor_function" \
+        --statement-id "s3-invoke-processor-$(date +%s)" \
+        --action "lambda:InvokeFunction" \
+        --principal "s3.amazonaws.com" \
+        --source-arn "arn:aws:s3:::$s3_bucket" \
+        --region "$REGION" 2>/dev/null; then
+        print_success "Lambda permission added successfully"
+    else
+        print_info "Permission might already exist (continuing...)"
+    fi
+    
+    # Create notification configuration
+    print_info "Creating S3 notification configuration..."
+    cat > /tmp/s3-notification.json << EOF
+{
+  "LambdaFunctionConfigurations": [
+    {
+      "Id": "VideoProcessorTrigger",
+      "LambdaFunctionArn": "$lambda_arn",
+      "Events": ["s3:ObjectCreated:*"],
+      "Filter": {
+        "Key": {
+          "FilterRules": [
+            {
+              "Name": "suffix",
+              "Value": ".mp4"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
+EOF
+    
+    # Apply notification configuration
+    print_info "Applying S3 notification configuration..."
+    if aws s3api put-bucket-notification-configuration \
+        --bucket "$s3_bucket" \
+        --notification-configuration file:///tmp/s3-notification.json \
+        --region "$REGION"; then
+        print_success "S3 notification configured successfully"
+        print_info "S3 will now trigger $s3_processor_function for .mp4 uploads"
+    else
+        print_error "Failed to configure S3 notification"
+        print_info "Checking notification configuration file:"
+        cat /tmp/s3-notification.json
+        return 1
+    fi
+    
+    # Clean up temp file
+    rm -f /tmp/s3-notification.json
 }
 
 # Function to show recent logs
@@ -1045,7 +1307,7 @@ cleanup_deployment() {
     echo
     
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        print_step "Deleting Resources"
+        print_step "🧹 Starting Cleanup Process"
         local ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null)
         
         if [ -z "$ACCOUNT_ID" ]; then
@@ -1056,6 +1318,7 @@ cleanup_deployment() {
         # Determine bucket names based on configuration
         local ARTIFACT_BUCKET=""
         local VIDEOS_BUCKET=""
+        local TRANSCODED_BUCKET=""
         
         # Get stack name for bucket naming
         local ACTUAL_STACK_NAME="$STACK_NAME"
@@ -1071,66 +1334,85 @@ cleanup_deployment() {
         fi
         
         VIDEOS_BUCKET="${ACTUAL_STACK_NAME}-s3-${ACCOUNT_ID}"
+        TRANSCODED_BUCKET="${ACTUAL_STACK_NAME}-transcoded-${ACCOUNT_ID}"
         
-        print_info "Target buckets:"
+        print_info "🎯 Target Resources:"
+        echo -e "  ${BOLD}Stack Name:${NC} $ACTUAL_STACK_NAME"
+        echo -e "  ${BOLD}Region:${NC} $REGION"
         echo -e "  ${BOLD}Artifact bucket:${NC} $ARTIFACT_BUCKET"
         echo -e "  ${BOLD}Videos bucket:${NC} $VIDEOS_BUCKET"
+        echo -e "  ${BOLD}Transcoded bucket:${NC} $TRANSCODED_BUCKET"
         echo ""
         
-        # First, empty both S3 buckets completely BEFORE attempting CloudFormation deletion
-        print_step "Step 1: Emptying S3 buckets first"
-        print_info "This ensures CloudFormation can delete the buckets without conflicts"
-        
-        # Function to completely empty S3 bucket
+        # Function to completely empty S3 bucket with progress
         empty_bucket_completely() {
             local bucket_name="$1"
             local bucket_type="$2"
             
             if aws s3api head-bucket --bucket "$bucket_name" --region "$REGION" >/dev/null 2>&1; then
-                print_step "Emptying $bucket_type bucket: $bucket_name"
+                print_step "🗑️  Emptying $bucket_type bucket: $bucket_name"
                 
-                # Delete all object versions and delete markers
-                print_info "🧹 Removing all objects, versions, and markers..."
-                
-                # Get counts first
+                # Get initial counts
+                print_info "📊 Analyzing bucket contents..."
                 local version_count=$(aws s3api list-object-versions --bucket "$bucket_name" --query 'length(Versions)' --output text 2>/dev/null || echo "0")
                 local marker_count=$(aws s3api list-object-versions --bucket "$bucket_name" --query 'length(DeleteMarkers)' --output text 2>/dev/null || echo "0")
                 local upload_count=$(aws s3api list-multipart-uploads --bucket "$bucket_name" --query 'length(Uploads)' --output text 2>/dev/null || echo "0")
+                local object_count=$(aws s3api list-objects-v2 --bucket "$bucket_name" --query 'KeyCount' --output text 2>/dev/null || echo "0")
                 
-                print_info "   Found: $version_count versions, $marker_count markers, $upload_count uploads"
+                if [ "$version_count" = "0" ] && [ "$marker_count" = "0" ] && [ "$upload_count" = "0" ] && [ "$object_count" = "0" ]; then
+                    print_success "   Bucket is already empty"
+                    return 0
+                fi
                 
-                # Abort all multipart uploads first
-                if [ "$upload_count" != "0" ]; then
-                    print_info "   Aborting multipart uploads..."
+                print_info "   📦 Found: $object_count objects, $version_count versions, $marker_count markers, $upload_count uploads"
+                
+                # Abort multipart uploads with progress
+                if [ "$upload_count" != "0" ] && [ "$upload_count" != "null" ]; then
+                    print_info "   🔄 Aborting multipart uploads..."
+                    local aborted=0
                     aws s3api list-multipart-uploads --bucket "$bucket_name" --query 'Uploads[].{Key:Key,UploadId:UploadId}' --output text 2>/dev/null | while read key upload_id; do
                         if [ -n "$key" ] && [ -n "$upload_id" ] && [ "$key" != "None" ] && [ "$upload_id" != "None" ]; then
                             aws s3api abort-multipart-upload --bucket "$bucket_name" --key "$key" --upload-id "$upload_id" >/dev/null 2>&1
+                            ((aborted++))
+                            printf "\r   📤 Aborted $aborted uploads..."
                         fi
                     done
+                    printf "\n"
                 fi
                 
-                # Delete all object versions
-                if [ "$version_count" != "0" ]; then
-                    print_info "   Deleting object versions..."
+                # Delete object versions with progress
+                if [ "$version_count" != "0" ] && [ "$version_count" != "null" ]; then
+                    print_info "   🗂️  Deleting object versions..."
+                    local deleted_versions=0
                     aws s3api list-object-versions --bucket "$bucket_name" --query 'Versions[].{Key:Key,VersionId:VersionId}' --output text 2>/dev/null | while read key version_id; do
                         if [ -n "$key" ] && [ -n "$version_id" ] && [ "$key" != "None" ] && [ "$version_id" != "None" ]; then
                             aws s3api delete-object --bucket "$bucket_name" --key "$key" --version-id "$version_id" >/dev/null 2>&1
+                            ((deleted_versions++))
+                            printf "\r   🗑️  Deleted $deleted_versions versions..."
                         fi
                     done
+                    printf "\n"
                 fi
                 
-                # Delete all delete markers
-                if [ "$marker_count" != "0" ]; then
-                    print_info "   Deleting delete markers..."
+                # Delete delete markers with progress
+                if [ "$marker_count" != "0" ] && [ "$marker_count" != "null" ]; then
+                    print_info "   🏷️  Deleting delete markers..."
+                    local deleted_markers=0
                     aws s3api list-object-versions --bucket "$bucket_name" --query 'DeleteMarkers[].{Key:Key,VersionId:VersionId}' --output text 2>/dev/null | while read key version_id; do
                         if [ -n "$key" ] && [ -n "$version_id" ] && [ "$key" != "None" ] && [ "$version_id" != "None" ]; then
                             aws s3api delete-object --bucket "$bucket_name" --key "$key" --version-id "$version_id" >/dev/null 2>&1
+                            ((deleted_markers++))
+                            printf "\r   🏷️  Deleted $deleted_markers markers..."
                         fi
                     done
+                    printf "\n"
                 fi
                 
-                # Final recursive cleanup
-                aws s3 rm s3://"$bucket_name" --recursive >/dev/null 2>&1
+                # Final recursive cleanup for current objects
+                if [ "$object_count" != "0" ] && [ "$object_count" != "null" ]; then
+                    print_info "   📁 Removing remaining objects..."
+                    aws s3 rm s3://"$bucket_name" --recursive 2>/dev/null || true
+                fi
                 
                 # Verify bucket is completely empty
                 local final_count=$(aws s3api list-objects-v2 --bucket "$bucket_name" --query 'KeyCount' --output text 2>/dev/null || echo "0")
@@ -1138,156 +1420,155 @@ cleanup_deployment() {
                 local final_markers=$(aws s3api list-object-versions --bucket "$bucket_name" --query 'length(DeleteMarkers)' --output text 2>/dev/null || echo "0")
                 
                 if [ "$final_count" = "0" ] && [ "$final_versions" = "0" ] && [ "$final_markers" = "0" ]; then
-                    print_success "$bucket_type bucket completely emptied"
+                    print_success "   ✅ $bucket_type bucket completely emptied"
                 else
-                    print_warning "$bucket_type bucket may still contain some objects ($final_count objects, $final_versions versions, $final_markers markers)"
+                    print_warning "   ⚠️  $bucket_type bucket may still contain items ($final_count objects, $final_versions versions, $final_markers markers)"
+                    print_info "   🔄 Attempting final cleanup..."
                     
-                    # One more aggressive cleanup attempt
-                    print_info "   Attempting final cleanup..."
+                    # More aggressive cleanup
                     aws s3api list-objects-v2 --bucket "$bucket_name" --query 'Contents[].Key' --output text 2>/dev/null | tr '\t' '\n' | while read -r key; do
                         if [ -n "$key" ] && [ "$key" != "None" ]; then
                             aws s3api delete-object --bucket "$bucket_name" --key "$key" >/dev/null 2>&1
                         fi
                     done
+                    
+                    # Final verification
+                    final_count=$(aws s3api list-objects-v2 --bucket "$bucket_name" --query 'KeyCount' --output text 2>/dev/null || echo "0")
+                    if [ "$final_count" = "0" ]; then
+                        print_success "   ✅ $bucket_type bucket now completely empty"
+                    else
+                        print_warning "   ⚠️  Some objects may remain in $bucket_type bucket"
+                    fi
                 fi
             else
-                print_info "$bucket_type bucket '$bucket_name' not found or already deleted"
+                print_info "   ℹ️  $bucket_type bucket '$bucket_name' not found or already deleted"
             fi
         }
         
-        # Empty both buckets completely first
-        empty_bucket_completely "$ARTIFACT_BUCKET" "artifact"
-        empty_bucket_completely "$VIDEOS_BUCKET" "videos"
+        # Step 1: Empty all S3 buckets
+        print_header "Step 1: Emptying S3 Buckets"
+        print_info "🎯 This ensures CloudFormation can delete buckets without conflicts"
         
-        print_success "Step 1 completed: Both buckets emptied"
+        empty_bucket_completely "$ARTIFACT_BUCKET" "Artifact"
+        empty_bucket_completely "$VIDEOS_BUCKET" "Videos"
+        empty_bucket_completely "$TRANSCODED_BUCKET" "Transcoded Videos"
         
-        # Step 2: Now delete CloudFormation stack (buckets should delete cleanly)
-        print_step "Step 2: Deleting CloudFormation stack"
-        # Step 2: Now delete CloudFormation stack (buckets should delete cleanly)
-        print_step "Step 2: Deleting CloudFormation stack"
-        if aws cloudformation describe-stacks --stack-name "$STACK_NAME" --region "$REGION" &>/dev/null; then
-            # Start stack deletion
-            print_info "🗑️  Initiating stack deletion..."
-            if aws cloudformation delete-stack --stack-name "$STACK_NAME" --region "$REGION"; then
-                print_success "Stack deletion initiated"
+        print_success "✅ Step 1 completed: All buckets emptied"
+        
+        # Step 2: Delete CloudFormation stack with detailed monitoring
+        print_header "Step 2: Deleting CloudFormation Stack"
+        
+        if aws cloudformation describe-stacks --stack-name "$ACTUAL_STACK_NAME" --region "$REGION" &>/dev/null; then
+            print_info "🎯 Stack found: $ACTUAL_STACK_NAME"
+            
+            # Initiate stack deletion
+            print_step "🗑️  Initiating stack deletion..."
+            if aws cloudformation delete-stack --stack-name "$ACTUAL_STACK_NAME" --region "$REGION"; then
+                print_success "   Stack deletion initiated successfully"
                 
-                # Wait for deletion with proper error handling and progress
-                print_info "⏳ Waiting for stack deletion to complete..."
-                print_info "   This should work smoothly now that buckets are empty..."
+                # Monitor deletion with real-time CloudFormation events
+                print_info "⏳ Monitoring stack deletion progress with real-time events..."
+                print_info "   💡 This process typically takes 2-5 minutes"
+                echo ""
                 
-                local wait_start=$(date +%s)
-                local spinner="/-\|"
-                local i=0
-                
-                # Monitor deletion progress with timeout
-                while true; do
-                    local stack_status=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --region "$REGION" --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "DELETE_COMPLETE")
-                    local elapsed=$(($(date +%s) - wait_start))
-                    
-                    case "$stack_status" in
-                        "DELETE_IN_PROGRESS")
-                            printf "\r${CYAN}${spinner:$i:1}${NC} Deleting stack... (${elapsed}s)"
-                            i=$(((i+1) % 4))
-                            sleep 2
-                            ;;
-                        "DELETE_COMPLETE")
-                            printf "\r${GREEN}✅ Stack deleted successfully (${elapsed}s)${NC}\n"
-                            break
-                            ;;
-                        "DELETE_FAILED")
-                            printf "\r${RED}❌ Stack deletion failed (${elapsed}s)${NC}\n"
-                            print_error "Stack deletion failed even after emptying buckets!"
-                            
-                            # Get stack events to show deletion errors
-                            print_error "Recent stack events:"
-                            aws cloudformation describe-stack-events --stack-name "$STACK_NAME" --region "$REGION" \
-                                --query 'StackEvents[?ResourceStatus==`DELETE_FAILED`].{Resource:LogicalResourceId,Reason:ResourceStatusReason}' \
-                                --output table 2>/dev/null || print_error "Could not retrieve stack events"
-                            
-                            print_warning "You may need to manually resolve these issues and delete the stack from AWS Console"
-                            break
-                            ;;
-                        *)
-                            if [ $elapsed -gt 1800 ]; then  # 30 minute timeout
-                                printf "\r${RED}❌ Stack deletion timeout (${elapsed}s)${NC}\n"
-                                print_error "Stack deletion is taking too long. Current status: $stack_status"
-                                print_warning "Please check AWS Console for manual intervention"
-                                break
-                            fi
-                            printf "\r${YELLOW}${spinner:$i:1}${NC} Stack status: $stack_status (${elapsed}s)"
-                            i=$(((i+1) % 4))
-                            sleep 2
-                            ;;
-                    esac
-                done
+                # Start real-time CloudFormation events monitoring
+                monitor_stack_events "$ACTUAL_STACK_NAME" "DELETE"
             else
-                print_error "Failed to initiate stack deletion"
-                print_info "Stack may not exist or you may not have permissions"
+                print_error "❌ Failed to initiate stack deletion"
+                print_info "This may indicate the stack doesn't exist or insufficient permissions"
             fi
         else
-            print_info "CloudFormation stack not found or already deleted"
+            print_info "ℹ️  CloudFormation stack '$ACTUAL_STACK_NAME' not found or already deleted"
+            print_success "✅ No stack to delete"
         fi
         
-        print_success "Step 2 completed: CloudFormation stack processing finished"
+        print_success "✅ Step 2 completed: CloudFormation stack processing finished"
         
-        # Step 3: Clean up artifact buckets after successful stack deletion
-        print_step "Step 3: Cleaning up artifact buckets"
+        # Step 3: Final Cleanup
+        print_header "Step 3: Final Cleanup"
         
         # Only clean artifact buckets - videos bucket should be handled by CloudFormation
         if aws s3api head-bucket --bucket "$ARTIFACT_BUCKET" --region "$REGION" >/dev/null 2>&1; then
-            print_info "🗑️  Cleaning up artifact bucket: $ARTIFACT_BUCKET"
+            print_info "🧹 Cleaning up remaining artifact bucket: $ARTIFACT_BUCKET"
             
-            # Empty artifact bucket completely
-            print_info "   Emptying artifact bucket contents..."
+            # Empty artifact bucket completely one more time
+            print_info "   📦 Ensuring artifact bucket is completely empty..."
             
-            # Delete all object versions and delete markers
+            # Delete all remaining object versions and delete markers
             aws s3api delete-objects --bucket "$ARTIFACT_BUCKET" --delete "$(aws s3api list-object-versions --bucket "$ARTIFACT_BUCKET" --query '{Objects: Versions[].{Key: Key, VersionId: VersionId}}' --max-items 1000)" --region "$REGION" >/dev/null 2>&1 || true
             aws s3api delete-objects --bucket "$ARTIFACT_BUCKET" --delete "$(aws s3api list-object-versions --bucket "$ARTIFACT_BUCKET" --query '{Objects: DeleteMarkers[].{Key: Key, VersionId: VersionId}}' --max-items 1000)" --region "$REGION" >/dev/null 2>&1 || true
             
             # Delete multipart uploads
             aws s3api list-multipart-uploads --bucket "$ARTIFACT_BUCKET" --region "$REGION" --query 'Uploads[].{Key: Key, UploadId: UploadId}' --output text | \
             while read -r key upload_id; do
-                if [ -n "$upload_id" ]; then
+                if [ -n "$upload_id" ] && [ "$upload_id" != "None" ]; then
                     aws s3api abort-multipart-upload --bucket "$ARTIFACT_BUCKET" --key "$key" --upload-id "$upload_id" --region "$REGION" >/dev/null 2>&1 || true
                 fi
             done
             
             # Delete the artifact bucket
-            print_info "   Deleting artifact bucket..."
+            print_info "   🗑️  Deleting artifact bucket..."
             if aws s3api delete-bucket --bucket "$ARTIFACT_BUCKET" --region "$REGION" >/dev/null 2>&1; then
-                print_success "✅ Artifact bucket deleted successfully"
+                print_success "   ✅ Artifact bucket deleted successfully"
             else
-                print_warning "Failed to delete artifact bucket: $ARTIFACT_BUCKET"
-                print_info "Please delete manually from AWS Console"
+                print_warning "   ⚠️  Failed to delete artifact bucket: $ARTIFACT_BUCKET"
+                print_info "   💡 Please delete manually from AWS Console if needed"
             fi
         else
-            print_success "✅ Artifact bucket already removed or doesn't exist"
+            print_success "   ✅ Artifact bucket already removed or doesn't exist"
         fi
         
         # Verify videos bucket was cleaned by CloudFormation
         if aws s3api head-bucket --bucket "$VIDEOS_BUCKET" --region "$REGION" >/dev/null 2>&1; then
-            print_warning "Videos bucket still exists: $VIDEOS_BUCKET"
-            print_info "This should have been deleted by CloudFormation"
+            print_warning "   ⚠️  Videos bucket still exists: $VIDEOS_BUCKET"
+            print_info "   💡 This should have been deleted by CloudFormation"
+            print_info "   🛠️  You may need to delete it manually from AWS Console"
         else
-            print_success "✅ Videos bucket successfully removed by CloudFormation"
+            print_success "   ✅ Videos bucket successfully removed by CloudFormation"
+        fi
+
+        # Verify transcoded videos bucket was cleaned by CloudFormation
+        if aws s3api head-bucket --bucket "$TRANSCODED_BUCKET" --region "$REGION" >/dev/null 2>&1; then
+            print_warning "   ⚠️  Transcoded videos bucket still exists: $TRANSCODED_BUCKET"
+            print_info "   💡 This should have been deleted by CloudFormation"
+            print_info "   🛠️  You may need to delete it manually from AWS Console"
+        else
+            print_success "   ✅ Transcoded videos bucket successfully removed by CloudFormation"
         fi
         
         # Clean local files
-        print_step "Cleaning local configuration files"
-        (
-            rm -f samconfig.toml 2>/dev/null || true
-            rm -f packaged-template.yaml 2>/dev/null || true
-            rm -f template.yaml.bak 2>/dev/null || true
-            rm -f .env* 2>/dev/null || true
-            rm -f .env.template 2>/dev/null || true
-            sleep 0.5
-        ) &
-        show_spinner $! "Cleaning local files"
-        wait $!
+        print_step "🧹 Cleaning local configuration files"
+        local cleanup_files=(
+            "samconfig.toml"
+            "packaged-template.yaml"
+            "template.yaml.bak"
+            ".env*"
+            ".env.template"
+        )
         
-        print_success "🎉 Cleanup completed"
+        for file_pattern in "${cleanup_files[@]}"; do
+            if ls $file_pattern 1> /dev/null 2>&1; then
+                rm -f $file_pattern 2>/dev/null || true
+                print_info "   🗑️  Removed: $file_pattern"
+            fi
+        done
+        
+        print_success "✅ Step 3 completed: Local cleanup finished"
+        
+        # Final summary
+        echo ""
+        print_header "🎉 Cleanup Complete!"
+        echo -e "${GREEN}✅ All AWS resources have been successfully removed:${NC}"
+        echo -e "  ${BOLD}•${NC} CloudFormation stack: ${BOLD}$ACTUAL_STACK_NAME${NC}"
+        echo -e "  ${BOLD}•${NC} S3 buckets: ${BOLD}$ARTIFACT_BUCKET${NC}, ${BOLD}$VIDEOS_BUCKET${NC} & ${BOLD}$TRANSCODED_BUCKET${NC}"
+        echo -e "  ${BOLD}•${NC} All associated AWS resources (Lambda, API Gateway, DynamoDB, MediaConvert, EventBridge, etc.)"
+        echo -e "  ${BOLD}•${NC} Local configuration files"
+        echo ""
+        echo -e "${CYAN}💰 This should stop all charges related to this deployment.${NC}"
+        echo -e "${CYAN}🔍 You can verify the cleanup in the AWS Console.${NC}"
+        
     else
-        print_info "Cleanup cancelled"
+        print_info "❌ Cleanup cancelled by user"
     fi
 }
 
@@ -1359,6 +1640,7 @@ main() {
             build_project
             deploy_application
             test_deployment
+            configure_s3_notifications
             exit 0
             ;;
         -s|--setup)
@@ -1390,6 +1672,7 @@ main() {
             build_project
             deploy_application
             test_deployment
+            configure_s3_notifications
             ;;
         *)
             print_header "Nebulax Application Deployment"

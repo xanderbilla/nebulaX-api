@@ -56,6 +56,26 @@ Resources:
         - Key: Project
           Value: !Ref AWS::StackName
 
+  # S3 Bucket for transcoded videos
+  TranscodedVideosBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-transcoded-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Suspended
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - Key: Project
+          Value: !Ref AWS::StackName
+
   # CloudWatch Log Group for Lambda Function
   DemoFunctionLogGroup:
     Type: AWS::Logs::LogGroup
@@ -101,12 +121,15 @@ Resources:
               Resource: 
                 - !Sub "arn:aws:s3:::${VideosBucket}"
                 - !Sub "arn:aws:s3:::${VideosBucket}/*"
+                - !Sub "arn:aws:s3:::${TranscodedVideosBucket}"
+                - !Sub "arn:aws:s3:::${TranscodedVideosBucket}/*"
       Environment:
         Variables:
           STAGE: !Ref Stage
           SPRING_PROFILES_ACTIVE: lambda
           DYNAMODB_VIDEOS_TABLE: !Ref VideosTable
           S3_VIDEOS_BUCKET: !Ref VideosBucket
+          S3_TRANSCODED_BUCKET: !Ref TranscodedVideosBucket
           CLOUDFRONT_BASE_URL: !Sub "https://${VideosBucket}.s3.${AWS::Region}.amazonaws.com"
       Events:
         HealthApi:
@@ -143,6 +166,160 @@ Resources:
       LogGroupName: !Sub "/aws/apigateway/${AWS::StackName}-api"
       RetentionInDays: 14
 
+  # MediaConvert IAM Role
+  MediaConvertRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: mediaconvert.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: MediaConvertS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectMetadata
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - !Sub "arn:aws:s3:::${VideosBucket}/*"
+                  - !Sub "arn:aws:s3:::${TranscodedVideosBucket}/*"
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::${VideosBucket}"
+                  - !Sub "arn:aws:s3:::${TranscodedVideosBucket}"
+
+  # S3 Video Processor Lambda Function
+  S3VideoProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-s3-processor"
+      CodeUri: target/demo-lambda.jar
+      Handler: com.example.demo.handler.S3VideoProcessorHandler::handleRequest
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-s3-processor:*"
+            - Effect: Allow
+              Action:
+                - mediaconvert:CreateJob
+                - mediaconvert:GetJob
+                - mediaconvert:ListJobs
+                - mediaconvert:DescribeEndpoints
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - dynamodb:UpdateItem
+                - dynamodb:PutItem
+                - dynamodb:GetItem
+              Resource: !GetAtt VideosTable.Arn
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:GetObjectMetadata
+                - s3:HeadObject
+              Resource: 
+                - !Sub "arn:aws:s3:::${VideosBucket}/*"
+            - Effect: Allow
+              Action:
+                - iam:PassRole
+              Resource: !GetAtt MediaConvertRole.Arn
+      Environment:
+        Variables:
+          STAGE: !Ref Stage
+          SPRING_PROFILES_ACTIVE: lambda
+          DYNAMODB_VIDEOS_TABLE: !Ref VideosTable
+          S3_VIDEOS_BUCKET: !Ref VideosBucket
+          S3_TRANSCODED_BUCKET: !Ref TranscodedVideosBucket
+          MEDIACONVERT_ROLE_ARN: !GetAtt MediaConvertRole.Arn
+
+  # EventBridge Rule for MediaConvert Job State Changes
+  MediaConvertEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${AWS::StackName}-mediaconvert-events"
+      Description: "Capture MediaConvert job state changes"
+      EventPattern:
+        source:
+          - "aws.mediaconvert"
+        detail-type:
+          - "MediaConvert Job State Change"
+        detail:
+          status:
+            - "COMPLETE"
+            - "ERROR"
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt MediaConvertEventHandler.Arn
+          Id: "MediaConvertEventTarget"
+
+  # Lambda function to handle MediaConvert events
+  MediaConvertEventHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-mediaconvert-handler"
+      CodeUri: target/demo-lambda.jar
+      Handler: com.example.demo.handler.MediaConvertEventHandler::handleRequest
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-mediaconvert-handler:*"
+            - Effect: Allow
+              Action:
+                - dynamodb:UpdateItem
+                - dynamodb:GetItem
+                - dynamodb:Query
+                - dynamodb:Scan
+                - dynamodb:PutItem
+              Resource: !GetAtt VideosTable.Arn
+            - Effect: Allow
+              Action:
+                - mediaconvert:GetJob
+              Resource: "*"
+      Environment:
+        Variables:
+          STAGE: !Ref Stage
+          SPRING_PROFILES_ACTIVE: lambda
+          DYNAMODB_VIDEOS_TABLE: !Ref VideosTable
+          S3_TRANSCODED_BUCKET: !Ref TranscodedVideosBucket
+
+  # Permission for EventBridge to invoke the Lambda function
+  MediaConvertEventHandlerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt MediaConvertEventHandler.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt MediaConvertEventRule.Arn
+
+  # Permission for S3 to invoke the S3VideoProcessorFunction
+  S3VideoProcessorPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref S3VideoProcessorFunction
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub "arn:aws:s3:::${VideosBucket}"
+
 Outputs:
   # API Gateway URL
   DemoApiUrl:
@@ -152,11 +329,25 @@ Outputs:
       Name: !Sub "${AWS::StackName}-api-url"
 
   # S3 Bucket Name
-  S3BucketName:
+  VideosBucketName:
     Description: "S3 bucket name for video uploads"
     Value: !Ref VideosBucket
     Export:
+      Name: !Sub "${AWS::StackName}-videos-bucket"
+
+  # S3 Bucket Name (legacy output)
+  S3BucketName:
+    Description: "S3 bucket name for video uploads (legacy)"
+    Value: !Ref VideosBucket
+    Export:
       Name: !Sub "${AWS::StackName}-s3-bucket"
+
+  # Transcoded S3 Bucket Name
+  TranscodedS3BucketName:
+    Description: "S3 bucket name for transcoded videos"
+    Value: !Ref TranscodedVideosBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-transcoded-s3-bucket"
 
   # DynamoDB Table Name
   DynamoDBTableName:
@@ -171,6 +362,20 @@ Outputs:
     Value: !Ref DemoFunction
     Export:
       Name: !Sub "${AWS::StackName}-lambda-function"
+
+  # S3 Video Processor Function Name
+  S3VideoProcessorFunctionName:
+    Description: "S3 Video Processor Lambda function name"
+    Value: !Ref S3VideoProcessorFunction
+    Export:
+      Name: !Sub "${AWS::StackName}-s3-processor-function"
+
+  # MediaConvert Event Handler Function Name
+  MediaConvertEventHandlerFunctionName:
+    Description: "MediaConvert Event Handler Lambda function name"
+    Value: !Ref MediaConvertEventHandler
+    Export:
+      Name: !Sub "${AWS::StackName}-mediaconvert-handler-function"
 
   # Health Endpoint
   HealthEndpoint:
