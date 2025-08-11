@@ -76,6 +76,179 @@ Resources:
         - Key: Project
           Value: !Ref AWS::StackName
 
+  # Origin Access Control for Videos Bucket CloudFront
+  VideosBucketOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-videos-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+        Description: !Sub "OAC for ${AWS::StackName} videos bucket"
+
+  # Origin Access Control for Transcoded Videos Bucket CloudFront
+  TranscodedVideosBucketOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-transcoded-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+        Description: !Sub "OAC for ${AWS::StackName} transcoded videos bucket"
+
+  # Bucket Policy for Videos Bucket (allows CloudFront access)
+  VideosBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref VideosBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontServicePrincipal
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: 's3:GetObject'
+            Resource: !Sub "${VideosBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                'AWS:SourceArn': !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${VideosBucketCloudFrontDistribution}"
+
+  # Bucket Policy for Transcoded Videos Bucket (allows CloudFront access)
+  TranscodedVideosBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref TranscodedVideosBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontServicePrincipal
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: 's3:GetObject'
+            Resource: !Sub "${TranscodedVideosBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                'AWS:SourceArn': !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${TranscodedVideosBucketCloudFrontDistribution}"
+
+  # CloudFront Distribution for Videos Bucket (Posters)
+  VideosBucketCloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: !Sub "CloudFront distribution for ${AWS::StackName} videos bucket (posters)"
+        Enabled: true
+        DefaultRootObject: index.html
+        Origins:
+          - Id: !Sub "${VideosBucket}-origin"
+            DomainName: !GetAtt VideosBucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+            OriginAccessControlId: !Ref VideosBucketOriginAccessControl
+        DefaultCacheBehavior:
+          TargetOriginId: !Sub "${VideosBucket}-origin"
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachedMethods:
+            - GET
+            - HEAD
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+          Compress: true
+          DefaultTTL: 86400
+          MaxTTL: 31536000
+          MinTTL: 0
+        PriceClass: PriceClass_100
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+      Tags:
+        - Key: Project
+          Value: !Ref AWS::StackName
+
+  # CloudFront Distribution for Transcoded Videos Bucket (Videos and Trailers)
+  TranscodedVideosBucketCloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: !Sub "CloudFront distribution for ${AWS::StackName} transcoded videos bucket"
+        Enabled: true
+        Origins:
+          - Id: !Sub "${TranscodedVideosBucket}-origin"
+            DomainName: !GetAtt TranscodedVideosBucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+            OriginAccessControlId: !Ref TranscodedVideosBucketOriginAccessControl
+        DefaultCacheBehavior:
+          TargetOriginId: !Sub "${TranscodedVideosBucket}-origin"
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachedMethods:
+            - GET
+            - HEAD
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+          Compress: false  # Don't compress video files
+          DefaultTTL: 86400
+          MaxTTL: 31536000
+          MinTTL: 0
+        # Additional cache behavior for HLS streaming files
+        CacheBehaviors:
+          - PathPattern: "*.m3u8"
+            TargetOriginId: !Sub "${TranscodedVideosBucket}-origin"
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+            CachedMethods:
+              - GET
+              - HEAD
+            ForwardedValues:
+              QueryString: false
+              Cookies:
+                Forward: none
+            Compress: false
+            DefaultTTL: 300  # Shorter TTL for playlist files
+            MaxTTL: 3600
+            MinTTL: 0
+          - PathPattern: "*.ts"
+            TargetOriginId: !Sub "${TranscodedVideosBucket}-origin"
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+            CachedMethods:
+              - GET
+              - HEAD
+            ForwardedValues:
+              QueryString: false
+              Cookies:
+                Forward: none
+            Compress: false
+            DefaultTTL: 86400  # Longer TTL for video segments
+            MaxTTL: 31536000
+            MinTTL: 0
+        PriceClass: PriceClass_100
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+      Tags:
+        - Key: Project
+          Value: !Ref AWS::StackName
+
   # CloudWatch Log Group for Lambda Function
   DemoFunctionLogGroup:
     Type: AWS::Logs::LogGroup
@@ -130,7 +303,8 @@ Resources:
           DYNAMODB_VIDEOS_TABLE: !Ref VideosTable
           S3_VIDEOS_BUCKET: !Ref VideosBucket
           S3_TRANSCODED_BUCKET: !Ref TranscodedVideosBucket
-          CLOUDFRONT_BASE_URL: !Sub "https://${VideosBucket}.s3.${AWS::Region}.amazonaws.com"
+          CLOUDFRONT_VIDEOS_BASE_URL: !Sub "https://${VideosBucketCloudFrontDistribution.DomainName}"
+          CLOUDFRONT_TRANSCODED_BASE_URL: !Sub "https://${TranscodedVideosBucketCloudFrontDistribution.DomainName}"
       Events:
         HealthApi:
           Type: Api
@@ -246,6 +420,8 @@ Resources:
           S3_VIDEOS_BUCKET: !Ref VideosBucket
           S3_TRANSCODED_BUCKET: !Ref TranscodedVideosBucket
           MEDIACONVERT_ROLE_ARN: !GetAtt MediaConvertRole.Arn
+          CLOUDFRONT_VIDEOS_BASE_URL: !Sub "https://${VideosBucketCloudFrontDistribution.DomainName}"
+          CLOUDFRONT_TRANSCODED_BASE_URL: !Sub "https://${TranscodedVideosBucketCloudFrontDistribution.DomainName}"
 
   # EventBridge Rule for MediaConvert Job State Changes
   MediaConvertEventRule:
@@ -301,6 +477,8 @@ Resources:
           SPRING_PROFILES_ACTIVE: lambda
           DYNAMODB_VIDEOS_TABLE: !Ref VideosTable
           S3_TRANSCODED_BUCKET: !Ref TranscodedVideosBucket
+          CLOUDFRONT_VIDEOS_BASE_URL: !Sub "https://${VideosBucketCloudFrontDistribution.DomainName}"
+          CLOUDFRONT_TRANSCODED_BASE_URL: !Sub "https://${TranscodedVideosBucketCloudFrontDistribution.DomainName}"
 
   # Permission for EventBridge to invoke the Lambda function
   MediaConvertEventHandlerPermission:
@@ -383,3 +561,17 @@ Outputs:
     Value: !Sub "https://${DemoApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/api/v1/health"
     Export:
       Name: !Sub "${AWS::StackName}-health-endpoint"
+
+  # CloudFront Distribution for Videos Bucket (Posters)
+  VideosBucketCloudFrontURL:
+    Description: "CloudFront distribution URL for videos bucket (posters)"
+    Value: !Sub "https://${VideosBucketCloudFrontDistribution.DomainName}"
+    Export:
+      Name: !Sub "${AWS::StackName}-videos-cloudfront-url"
+
+  # CloudFront Distribution for Transcoded Videos Bucket
+  TranscodedVideosBucketCloudFrontURL:
+    Description: "CloudFront distribution URL for transcoded videos bucket"
+    Value: !Sub "https://${TranscodedVideosBucketCloudFrontDistribution.DomainName}"
+    Export:
+      Name: !Sub "${AWS::StackName}-transcoded-cloudfront-url"

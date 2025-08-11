@@ -54,8 +54,11 @@ public class VideoService {
     private final S3Presigner s3Presigner;
     private final DynamoDbClient dynamoDbClient;
 
-    @Value("${app.cloudfront.base-url:https://d1234567890.cloudfront.net}")
-    private String cloudfrontBaseUrl;
+    @Value("${app.cloudfront.videos.base-url:https://d1234567890.cloudfront.net}")
+    private String cloudfrontVideosBaseUrl;
+
+    @Value("${app.cloudfront.transcoded.base-url:https://d0987654321.cloudfront.net}")
+    private String cloudfrontTranscodedBaseUrl;
 
     @Value("${app.dynamodb.videos-table:Videos}")
     private String videosTableName;
@@ -427,7 +430,85 @@ public class VideoService {
         }
         // Remove leading slash if present
         String cleanKey = objectKey.startsWith("/") ? objectKey.substring(1) : objectKey;
-        return cloudfrontBaseUrl + "/" + cleanKey;
+        
+        // Determine which CloudFront distribution to use based on the content type
+        String baseUrl = determineCloudFrontUrl(objectKey);
+        return baseUrl + "/" + cleanKey;
+    }
+
+    private String determineCloudFrontUrl(String objectKey) {
+        String lowerKey = objectKey.toLowerCase();
+        
+        // Poster images come from the videos bucket (original uploads)
+        if (lowerKey.contains("poster") || lowerKey.endsWith(".jpg") || lowerKey.endsWith(".png")) {
+            return cloudfrontVideosBaseUrl;
+        }
+        
+        // Transcoded videos and trailers come from the transcoded bucket
+        // This includes HLS files (.m3u8, .ts) and any other processed video content
+        if (lowerKey.contains("hls/") || lowerKey.endsWith(".m3u8") || lowerKey.endsWith(".ts") || 
+            lowerKey.contains("trailer") || lowerKey.contains("/output/")) {
+            return cloudfrontTranscodedBaseUrl;
+        }
+        
+        // Default to transcoded bucket for other video content
+        return cloudfrontTranscodedBaseUrl;
+    }
+
+    /**
+     * Extracts the S3 key from an S3 URL.
+     * Handles both direct S3 URLs and S3 URLs with query parameters.
+     * 
+     * @param s3Url the S3 URL
+     * @return the S3 key (object path without bucket name)
+     */
+    private String extractS3KeyFromUrl(String s3Url) {
+        if (s3Url == null || s3Url.isEmpty()) {
+            return "";
+        }
+        
+        try {
+            // Remove query parameters if present
+            String urlWithoutQuery = s3Url.split("\\?")[0];
+            
+            // Extract key from S3 URL format: https://bucket-name.s3.region.amazonaws.com/key
+            // or https://s3.region.amazonaws.com/bucket-name/key
+            if (urlWithoutQuery.contains(".s3.") || urlWithoutQuery.contains("s3.")) {
+                // Find the part after the bucket name
+                String[] parts = urlWithoutQuery.split("/");
+                if (parts.length > 3) {
+                    // Skip protocol, domain, and potentially bucket parts
+                    StringBuilder keyBuilder = new StringBuilder();
+                    boolean foundKey = false;
+                    
+                    for (int i = 3; i < parts.length; i++) {
+                        if (foundKey) {
+                            keyBuilder.append("/");
+                        }
+                        keyBuilder.append(parts[i]);
+                        foundKey = true;
+                    }
+                    
+                    return keyBuilder.toString();
+                }
+            }
+            
+            // Fallback: try to extract everything after the last domain part
+            String[] urlParts = urlWithoutQuery.split("/");
+            if (urlParts.length > 3) {
+                StringBuilder keyBuilder = new StringBuilder();
+                for (int i = 3; i < urlParts.length; i++) {
+                    if (i > 3) keyBuilder.append("/");
+                    keyBuilder.append(urlParts[i]);
+                }
+                return keyBuilder.toString();
+            }
+            
+        } catch (Exception e) {
+            log.warn("Failed to extract S3 key from URL: {}", s3Url, e);
+        }
+        
+        return "";
     }
 
     private String extractFolderPath(String objectKey) {
@@ -864,20 +945,24 @@ public class VideoService {
                 return;
             }
             
+            // Extract S3 key from URL and convert to CloudFront URL
+            String s3Key = extractS3KeyFromUrl(m3u8Url);
+            String cloudfrontUrl = buildAccessLink(s3Key);
+            
             // Update URLs and status
             if (isTrailer) {
-                video.setTrailerUrl(m3u8Url);
+                video.setTrailerUrl(cloudfrontUrl);
                 video.setTrailerJobStatus("Completed");
             } else {
-                video.setVideoUrl(m3u8Url);
+                video.setVideoUrl(cloudfrontUrl);
                 video.setVideoJobStatus("Completed");
             }
             
             video.setModifiedAt(Instant.now().toString());
             videoRepository.save(video);
             
-            log.info("Updated video job completion: videoId={}, jobId={}, m3u8Url={}, isTrailer={}", 
-                    video.getVideoId(), jobId, m3u8Url, isTrailer);
+            log.info("Updated video job completion: videoId={}, jobId={}, cloudfrontUrl={}, isTrailer={}", 
+                    video.getVideoId(), jobId, cloudfrontUrl, isTrailer);
                     
         } catch (Exception e) {
             log.error("Failed to update video job completion: jobId={}, isTrailer={}", jobId, isTrailer, e);
