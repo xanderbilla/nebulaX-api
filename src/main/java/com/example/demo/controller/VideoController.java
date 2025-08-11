@@ -36,24 +36,27 @@ public class VideoController {
     /**
      * Retrieves all videos from the system.
      * 
-     * @return ResponseEntity containing list of all videos
+     * @return ResponseEntity containing list of all videos with consistent process information
      */
     @GetMapping
-    public ResponseEntity<ApiResponse<List<Video>>> getAllVideos() {
+    public ResponseEntity<ApiResponse<List<VideoDetailResponse>>> getAllVideos() {
         log.info("Fetching all videos");
 
         try {
             List<Video> videos = videoService.getAllVideos();
+            List<VideoDetailResponse> videoResponses = videos.stream()
+                    .map(videoService::convertToDetailResponse)
+                    .toList();
 
-            ApiResponse<List<Video>> response = ApiResponse.success(
-                    "Videos retrieved successfully", videos);
+            ApiResponse<List<VideoDetailResponse>> response = ApiResponse.success(
+                    "Videos retrieved successfully", videoResponses);
 
             return ResponseEntity.ok(response);
 
         } catch (Exception e) {
             log.error("Error fetching all videos", e);
 
-            ApiResponse<List<Video>> errorResponse = ApiResponse.error(
+            ApiResponse<List<VideoDetailResponse>> errorResponse = ApiResponse.error(
                     "Failed to fetch videos: " + e.getMessage(),
                     HttpStatus.INTERNAL_SERVER_ERROR.value());
 
