@@ -22,7 +22,6 @@ public class VideoDetailResponse {
     
     private String videoId;
     private String title;
-    private String type;
     private String category;
     private String folderPath;
     private String createdAt;

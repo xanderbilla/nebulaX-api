@@ -15,7 +15,7 @@ import jakarta.validation.constraints.Size;
 /**
  * Domain model representing a video entity in the Nebulax system.
  * Stores video metadata, file URLs, and categorization information in DynamoDB.
- * Supports multiple content types (video, trailer, poster) and streaming categories.
+ * Supports streaming categories (tv, movie, live).
  * 
  * @author Xander Billa
  * @since August 3, 2025
@@ -36,10 +36,6 @@ public class Video {
     @NotBlank(message = "Title cannot be blank")
     @Size(min = 1, max = 255, message = "Title must be between 1 and 255 characters")
     private String title;
-
-    @NotBlank(message = "Type cannot be blank")
-    @Pattern(regexp = "^(video|trailer|poster)$", message = "Type must be one of: video, trailer, poster")
-    private String type;
 
     @NotBlank(message = "Category cannot be blank")
     @Pattern(regexp = "^(tv|movie|live)$", message = "Category must be one of: tv, movie, live")

@@ -29,10 +29,6 @@ public class CreateVideoRequest {
     @Size(min = 1, max = 255, message = "Title must be between 1 and 255 characters")
     private String title;
 
-    @NotBlank(message = "Type cannot be blank")
-    @Pattern(regexp = "^(video|trailer|poster)$", message = "Type must be one of: video, trailer, poster")
-    private String type;
-
     @NotBlank(message = "Category cannot be blank")
     @Pattern(regexp = "^(tv|movie|live)$", message = "Category must be one of: tv, movie, live")
     private String category;

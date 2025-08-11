@@ -85,7 +85,6 @@ public class VideoService {
                         Video video = new Video();
                         video.setVideoId(item.get("videoId").s());
                         video.setTitle(item.get("title") != null ? item.get("title").s() : "");
-                        video.setType(item.get("type") != null ? item.get("type").s() : "video");
                         video.setCategory(item.get("category") != null ? item.get("category").s() : "");
                         video.setFolderPath(item.get("folderPath") != null ? item.get("folderPath").s() : "");
                         video.setVideoUrl(item.get("videoUrl") != null ? item.get("videoUrl").s() : "");
@@ -130,9 +129,8 @@ public class VideoService {
             // Build access link using CloudFront URL pattern
             String videoUrl = buildAccessLink(objectKey);
 
-            // Extract folder path and determine type/category
+            // Extract folder path and category
             String folderPath = extractFolderPath(objectKey);
-            String type = determineType(objectKey);
             String category = determineCategory(folderPath);
 
             // Create Video object with new schema
@@ -140,7 +138,6 @@ public class VideoService {
             Video video = Video.builder()
                     .videoId(videoId)
                     .title(title)
-                    .type(type)
                     .category(category)
                     .folderPath(folderPath)
                     .videoUrl(videoUrl)
@@ -170,9 +167,6 @@ public class VideoService {
             // Update only non-null fields (metadata only - no folder path updates allowed)
             if (request.getTitle() != null) {
                 video.setTitle(request.getTitle());
-            }
-            if (request.getType() != null) {
-                video.setType(request.getType());
             }
             if (request.getCategory() != null) {
                 video.setCategory(request.getCategory());
@@ -519,16 +513,6 @@ public class VideoService {
         return ""; // Root folder
     }
 
-    private String determineType(String objectKey) {
-        String lowerKey = objectKey.toLowerCase();
-        if (lowerKey.contains("trailer")) {
-            return "trailer";
-        } else if (lowerKey.contains("poster") || lowerKey.endsWith(".jpg") || lowerKey.endsWith(".png")) {
-            return "poster";
-        }
-        return "video";
-    }
-
     private String determineCategory(String folderPath) {
         if (folderPath == null || folderPath.isEmpty()) {
             return "movie"; // default
@@ -563,7 +547,6 @@ public class VideoService {
             Video initialVideo = Video.builder()
                     .videoId(videoId)
                     .title(request.getTitle())
-                    .type("video") // main video type
                     .category(request.getCategory())
                     .folderPath(s3FolderPath)
                     .createdAt(now)
@@ -897,7 +880,6 @@ public class VideoService {
                 video = Video.builder()
                     .videoId(videoId)
                     .title(extractTitleFromObjectKey(objectKey))
-                    .type("video")
                     .category("movie") // Default category
                     .folderPath(extractFolderPathFromObjectKey(objectKey))
                     .videoUrl("")
@@ -1120,7 +1102,6 @@ public class VideoService {
         return VideoDetailResponse.builder()
             .videoId(video.getVideoId())
             .title(video.getTitle())
-            .type(video.getType())
             .category(video.getCategory())
             .folderPath(video.getFolderPath())
             .createdAt(video.getCreatedAt())
