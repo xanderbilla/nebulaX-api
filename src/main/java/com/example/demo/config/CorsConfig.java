@@ -28,7 +28,9 @@ public class CorsConfig implements WebMvcConfigurer {
                     "http://localhost:*",
                     "https://localhost:*",
                     "http://127.0.0.1:*",
-                    "https://127.0.0.1:*"
+                    "https://127.0.0.1:*",
+                    "https://admin.xanderbilla.com",
+                    "http://admin.xanderbilla.com"
                 )
                 .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD")
                 .allowedHeaders("*")
@@ -45,7 +47,9 @@ public class CorsConfig implements WebMvcConfigurer {
             "http://localhost:*",
             "https://localhost:*", 
             "http://127.0.0.1:*",
-            "https://127.0.0.1:*"
+            "https://127.0.0.1:*",
+            "https://admin.xanderbilla.com",
+            "http://admin.xanderbilla.com"
         ));
         
         configuration.setAllowedMethods(Arrays.asList(
