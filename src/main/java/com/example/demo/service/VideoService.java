@@ -262,7 +262,8 @@ public class VideoService {
                 if (!doesS3ObjectExist(mainVideoKey)) {
                     throw new VideoProcessingException("Updated main video file not found in S3: " + mainVideoKey);
                 }
-                existingVideo.setVideoUrl(buildAccessLink(mainVideoKey));
+                // Don't set videoUrl here - it will be set when transcoding completes
+                // The MediaConvert job completion handler will set videoUrl to main_hls.m3u8
                 existingVideo.setS3Key(mainVideoKey);
             }
 
@@ -281,7 +282,8 @@ public class VideoService {
                 if (!doesS3ObjectExist(trailerKey)) {
                     throw new VideoProcessingException("Updated trailer file not found in S3: " + trailerKey);
                 }
-                existingVideo.setTrailerUrl(buildAccessLink(trailerKey));
+                // Don't set trailerUrl here - it will be set when transcoding completes
+                // The MediaConvert job completion handler will set trailerUrl to trailer_hls.m3u8
             }
 
             // Update modification timestamp
@@ -620,7 +622,8 @@ public class VideoService {
                 if (!doesS3ObjectExist(mainVideoKey)) {
                     throw new VideoProcessingException("Main video file not found in S3: " + mainVideoKey);
                 }
-                existingVideo.setVideoUrl(buildAccessLink(mainVideoKey));
+                // Don't set videoUrl here - it will be set when transcoding completes
+                // The MediaConvert job completion handler will set videoUrl to main_hls.m3u8
                 existingVideo.setS3Key(mainVideoKey);
             }
 
@@ -637,7 +640,8 @@ public class VideoService {
                 if (!doesS3ObjectExist(trailerKey)) {
                     throw new VideoProcessingException("Trailer file not found in S3: " + trailerKey);
                 }
-                existingVideo.setTrailerUrl(buildAccessLink(trailerKey));
+                // Don't set trailerUrl here - it will be set when transcoding completes
+                // The MediaConvert job completion handler will set trailerUrl to trailer_hls.m3u8
             }
 
             // Update modification timestamp
